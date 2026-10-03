@@ -1,0 +1,71 @@
+from rest_framework import status, viewsets
+from rest_framework.decorators import action, api_view
+from rest_framework.exceptions import ValidationError
+from rest_framework.response import Response
+from rest_framework_simplejwt.views import TokenObtainPairView
+
+from .models import Client, User
+from .permissions import IsClientAdmin, IsSuperAdmin
+from .serializers import (
+    ClientOnboardSerializer, ClientSerializer, LoginSerializer, UserSerializer,
+)
+
+
+class LoginView(TokenObtainPairView):
+    serializer_class = LoginSerializer
+
+
+@api_view(["GET"])
+def me(request):
+    return Response(UserSerializer(request.user).data)
+
+
+class ClientViewSet(viewsets.ModelViewSet):
+    """Super admin: onboard and manage motels."""
+
+    permission_classes = [IsSuperAdmin]
+    queryset = Client.objects.all()
+
+    def get_serializer_class(self):
+        return ClientOnboardSerializer if self.action == "create" else ClientSerializer
+
+    def destroy(self, request, *args, **kwargs):
+        # Never hard delete a motel; deactivate instead.
+        client = self.get_object()
+        client.is_active = False
+        client.save()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=["get"])
+    def users(self, request, pk=None):
+        client = self.get_object()
+        return Response(UserSerializer(client.users.all().order_by("username"), many=True).data)
+
+
+class UserViewSet(viewsets.ModelViewSet):
+    """Client admin: onboard and manage users of their own motel."""
+
+    permission_classes = [IsClientAdmin]
+    serializer_class = UserSerializer
+
+    def get_queryset(self):
+        return User.objects.filter(client=self.request.user.client).order_by("username")
+
+    def perform_create(self, serializer):
+        serializer.save(client=self.request.user.client)
+
+    def perform_update(self, serializer):
+        if serializer.instance == self.request.user:
+            if serializer.validated_data.get("is_active") is False:
+                raise ValidationError("You cannot deactivate yourself.")
+            if serializer.validated_data.get("role", User.CLIENT_ADMIN) != User.CLIENT_ADMIN:
+                raise ValidationError("You cannot change your own role.")
+        serializer.save()
+
+    def destroy(self, request, *args, **kwargs):
+        user = self.get_object()
+        if user == request.user:
+            raise ValidationError("You cannot deactivate yourself.")
+        user.is_active = False
+        user.save()
+        return Response(status=status.HTTP_204_NO_CONTENT)
