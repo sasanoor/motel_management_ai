@@ -86,6 +86,8 @@ class Stay(models.Model):
 
     rate = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    # set when the clerk edits the balance at check-in: + extra charge, - discount
+    adjustment = models.DecimalField(max_digits=10, decimal_places=2, default=0)
 
     clerk = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="stays"
@@ -111,7 +113,7 @@ class Stay(models.Model):
     def save(self, *args, **kwargs):
         days = (self.check_out_date - self.check_in_date).days
         self.num_days = max(days, 1)
-        self.total_amount = (Decimal(self.rate) * self.num_days).quantize(Decimal("0.01"))
+        self.total_amount = (Decimal(self.rate) * self.num_days + Decimal(self.adjustment or 0)).quantize(Decimal("0.01"))
         super().save(*args, **kwargs)
 
     @property
@@ -146,3 +148,23 @@ class Payment(models.Model):
 
     def __str__(self):
         return f"{self.method} {self.amount} for stay {self.stay_id}"
+
+
+class Note(models.Model):
+    """A note for maintenance / housekeeping, written by front desk staff for a date."""
+
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="maintenance_notes")
+    date = models.DateField(db_index=True)
+    room = models.ForeignKey(Room, null=True, blank=True, on_delete=models.SET_NULL, related_name="maintenance_notes")
+    text = models.TextField()
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="maintenance_notes"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["date", "created_at"]
+
+    def __str__(self):
+        return f"{self.date} {self.room or 'General'}: {self.text[:40]}"

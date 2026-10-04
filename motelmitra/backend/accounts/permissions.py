@@ -27,6 +27,18 @@ class IsClientStaff(BasePermission):
         )
 
 
+class IsMaintenanceOrStaff(BasePermission):
+    """Maintenance, client admin or client user of an active motel."""
+
+    def has_permission(self, request, view):
+        u = request.user
+        return bool(
+            u and u.is_authenticated
+            and u.role in (User.CLIENT_ADMIN, User.CLIENT_USER, User.MAINTENANCE)
+            and u.client_id and u.client.is_active
+        )
+
+
 class IsClientStaffOrSuperAdmin(BasePermission):
     def has_permission(self, request, view):
         u = request.user

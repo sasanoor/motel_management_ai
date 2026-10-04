@@ -22,8 +22,8 @@ class UserSerializer(serializers.ModelSerializer):
         return obj.get_full_name() or obj.username
 
     def validate_role(self, value):
-        if value not in (User.CLIENT_ADMIN, User.CLIENT_USER):
-            raise serializers.ValidationError("Role must be Client Admin or Client User.")
+        if value not in (User.CLIENT_ADMIN, User.CLIENT_USER, User.MAINTENANCE):
+            raise serializers.ValidationError("Role must be Client Admin, Client User or Maintenance.")
         return value
 
     def create(self, validated_data):

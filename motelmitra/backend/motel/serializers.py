@@ -4,7 +4,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
 
-from .models import Guest, Payment, Room, RoomType, Stay
+from .models import Guest, Note, Payment, Room, RoomType, Stay
 
 ZERO = Decimal("0.00")
 
@@ -116,7 +116,7 @@ class StaySerializer(serializers.ModelSerializer):
         fields = [
             "id", "guest", "room", "room_number", "room_type",
             "check_in_date", "check_in_time", "check_out_date", "check_out_time",
-            "num_guests", "num_days", "rate", "total_amount",
+            "num_guests", "num_days", "rate", "adjustment", "total_amount",
             "amount_paid", "cash_paid", "credit_paid", "balance",
             "clerk", "clerk_name", "comments", "status", "checked_out_at",
             "is_deleted", "deleted_at", "deleted_by_name", "payments", "created_at",
@@ -170,13 +170,14 @@ class StayWriteSerializer(serializers.ModelSerializer):
     credit = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, default=ZERO, write_only=True)
 
     rate = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)
+    allow_overlap = serializers.BooleanField(required=False, default=False, write_only=True)
 
     class Meta:
         model = Stay
         fields = [
             "id", "room", "check_in_date", "check_in_time", "check_out_date", "check_out_time",
-            "num_guests", "rate", "comments",
-            "guest_id", *GUEST_FIELDS, "cash", "credit",
+            "num_guests", "rate", "adjustment", "comments",
+            "guest_id", *GUEST_FIELDS, "cash", "credit", "allow_overlap",
         ]
 
     def validate_room(self, room):
@@ -194,6 +195,11 @@ class StayWriteSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"check_out_date": "Checkout cannot be before check-in."})
         if attrs.get("cash", ZERO) < 0 or attrs.get("credit", ZERO) < 0:
             raise serializers.ValidationError("Payments cannot be negative.")
+        if cin and cout:
+            rate = attrs.get("rate", inst.rate if inst else None)
+            adj = attrs.get("adjustment", inst.adjustment if inst else ZERO) or ZERO
+            if rate is not None and rate * max((cout - cin).days, 1) + adj < 0:
+                raise serializers.ValidationError({"balance": "Total cannot go below zero."})
         if room and cin and cout:
             end = cout if cout > cin else cin + timezone.timedelta(days=1)
             clash = Stay.objects.filter(
@@ -203,11 +209,13 @@ class StayWriteSerializer(serializers.ModelSerializer):
             if inst:
                 clash = clash.exclude(pk=inst.pk)
             other = clash.select_related("guest").first()
-            if other:
+            if other and not attrs.get("allow_overlap"):
+                # The clerk can confirm and rent the same room again (allow_overlap=true).
                 raise serializers.ValidationError({
-                    "room": f"Room {room.number} is occupied by {other.guest.name} "
-                            f"until {other.check_out_date:%m/%d/%Y}."
+                    "overlap": f"Room {room.number} is occupied by {other.guest.name} "
+                               f"until {other.check_out_date:%m/%d/%Y}."
                 })
+        attrs.pop("allow_overlap", None)
         return attrs
 
     def _guest_data(self, attrs):
@@ -262,3 +270,26 @@ class StayWriteSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         return StaySerializer(instance, context=self.context).data
+
+
+class NoteSerializer(serializers.ModelSerializer):
+    room_number = serializers.CharField(source="room.number", read_only=True, default=None)
+    created_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Note
+        fields = ["id", "date", "room", "room_number", "text", "created_by", "created_by_name", "created_at", "updated_at"]
+        read_only_fields = ["created_by", "created_at", "updated_at"]
+
+    def get_created_by_name(self, obj):
+        return (obj.created_by.get_full_name() or obj.created_by.username) if obj.created_by else ""
+
+    def validate_room(self, room):
+        if room and room.client_id != self.context["request"].user.client_id:
+            raise serializers.ValidationError("Invalid room.")
+        return room
+
+    def validate_text(self, value):
+        if not value.strip():
+            raise serializers.ValidationError("Note cannot be empty.")
+        return value.strip()

@@ -15,6 +15,7 @@ router.register("room-types", mv.RoomTypeViewSet, basename="room-type")
 router.register("rooms", mv.RoomViewSet, basename="room")
 router.register("guests", mv.GuestViewSet, basename="guest")
 router.register("stays", mv.StayViewSet, basename="stay")
+router.register("notes", mv.NoteViewSet, basename="note")
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -22,6 +23,8 @@ urlpatterns = [
     path("api/auth/refresh/", TokenRefreshView.as_view()),
     path("api/auth/me/", me),
     path("api/dashboard/", mv.dashboard),
+    path("api/maintenance/", mv.maintenance_board),
+    path("api/reports/today/", mv.report_today),
     path("api/reports/checkins/", mv.report_checkins),
     path("api/reports/collections/", mv.report_collections),
     path("api/reports/outstanding/", mv.report_outstanding),

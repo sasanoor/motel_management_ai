@@ -213,7 +213,7 @@ export function Users() {
     { name: 'last_name', label: 'Last name' },
     { name: 'phone', label: 'Phone' },
     { name: 'email', label: 'Email', type: 'email' },
-    { name: 'role', label: 'Role', type: 'select', options: [{ value: 'CLIENT_USER', label: 'Client User (front desk)' }, { value: 'CLIENT_ADMIN', label: 'Client Admin' }] },
+    { name: 'role', label: 'Role', type: 'select', options: [{ value: 'CLIENT_USER', label: 'Client User (front desk)' }, { value: 'MAINTENANCE', label: 'Maintenance (checkout rooms + notes only)' }, { value: 'CLIENT_ADMIN', label: 'Client Admin' }] },
     { name: 'is_active', label: 'Status', type: 'checkbox', hint: 'Active (can log in)' },
   ]
   async function save(f) {
@@ -229,7 +229,7 @@ export function Users() {
   }
   return (
     <>
-      <PageHead title="Users" sub="Front desk staff for your motel">
+      <PageHead title="Users" sub="Front desk and maintenance staff for your motel">
         <button className="btn btn-primary" onClick={() => setEdit({ username: '', password: '', first_name: '', last_name: '', phone: '', email: '', role: 'CLIENT_USER', is_active: true })}>+ Add user</button>
       </PageHead>
       <Alert>{err}</Alert>

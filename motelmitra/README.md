@@ -6,7 +6,7 @@ Motel management system. Django REST + MySQL backend, React (Vite) frontend.
 
 | Area | What it does |
 |---|---|
-| Roles | Super Admin onboards motels (clients). Client Admin manages users, rooms, room types, rates, deleted guests. Client User checks in guests and takes payments |
+| Roles | Super Admin onboards motels (clients). Client Admin manages users, rooms, room types, rates, deleted guests. Client User checks in guests and takes payments. Maintenance sees only the day's checkout rooms and maintenance notes |
 | Guest onboarding | Room, check-in/out date and time (checkout 11 AM default), guests, days, name, address, city, state, zip, car, plate, phone, cash, credit, balance, clerk (auto), comments, do not rent |
 | Room rates | Default rate per room type, pre-filled at check-in, editable per guest. Total = rate × days |
 | Home screen | Date picker, today's checkouts, all guests staying on a date, occupancy and open balance stats, one-click checkout |
@@ -29,6 +29,35 @@ motelmitra/
     src/pages/      screens
     src/components/ layout, tables, modals
 ```
+
+## Start / stop with one click
+
+| OS | Start | Stop |
+|---|---|---|
+| Windows | double-click `start_app.bat` | double-click `stop_app.bat` |
+| Mac / Linux | `./start_app.sh` | `./stop_app.sh` |
+
+The start script checks Python and Node, installs packages on first run, applies database updates,
+starts backend and frontend in the background, waits until both respond, then opens the browser.
+It detects this PC's IPv4 address on every start and serves the app on both:
+
+| Where | Address |
+|---|---|
+| This PC | http://localhost:5173 |
+| Phones / tablets / PCs on the same WiFi | http://<detected IP>:5173 (also saved in `app_links.txt`) |
+
+On Windows it also adds firewall rules for ports 5173 and 8000 (run `start_app.bat` once as administrator for this).
+Set `LAN=0` at the top of the script to run on this PC only.
+
+Logs go to the `logs` folder, one file per day (older than 30 days are deleted automatically):
+
+| File | Contains |
+|---|---|
+| `logs/start_app_YYYY-MM-DD.txt` | Start/stop steps, errors, package installs, database updates |
+| `logs/backend_YYYY-MM-DD.txt` | Django: every API request, errors and tracebacks |
+| `logs/frontend_YYYY-MM-DD.txt` | React / Vite server output |
+
+You still need MySQL running and `backend/.env` filled in (first-time setup below).
 
 ## Setup
 
@@ -82,6 +111,7 @@ Open http://localhost:5173
 | Super Admin | superadmin | admin123 |
 | Client Admin | owner | owner123 |
 | Client User | clerk | clerk123 |
+| Maintenance | maint | maint123 |
 
 Change these before going live.
 

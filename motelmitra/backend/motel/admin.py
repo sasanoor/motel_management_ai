@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Guest, Payment, Room, RoomType, Stay
+from .models import Guest, Note, Payment, Room, RoomType, Stay
 
 
 @admin.register(RoomType)
@@ -32,3 +32,9 @@ class StayAdmin(admin.ModelAdmin):
     list_display = ("guest", "room", "check_in_date", "check_out_date", "total_amount", "status", "is_deleted")
     list_filter = ("client", "status", "is_deleted")
     inlines = [PaymentInline]
+
+
+@admin.register(Note)
+class NoteAdmin(admin.ModelAdmin):
+    list_display = ("date", "room", "text", "created_by", "client")
+    list_filter = ("client", "date")

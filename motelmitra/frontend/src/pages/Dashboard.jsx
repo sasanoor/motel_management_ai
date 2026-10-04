@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import api, { errorText } from '../api'
+import NotesPanel from '../components/NotesPanel'
+import RoomSheet from '../components/RoomSheet'
 import StaysTable from '../components/StaysTable'
 import { Alert, PageHead, PaymentModal, Stat } from '../components/ui'
 import { addDays, fmtDate, money, todayISO } from '../utils'
@@ -62,10 +64,22 @@ export default function Dashboard() {
         <button className={tab === 'staying' ? 'on' : ''} onClick={() => setTab('staying')}>
           All guests on this date {data && <span className="count">{data.staying.length}</span>}
         </button>
+        <button className={tab === 'sheet' ? 'on' : ''} onClick={() => setTab('sheet')}>
+          Room sheet {data && <span className="count">{data.rooms.length} rooms</span>}
+        </button>
+        <button className={tab === 'notes' ? 'on' : ''} onClick={() => setTab('notes')}>
+          Maintenance notes {data && <span className="count">{data.stats.notes}</span>}
+        </button>
       </div>
 
       <div className="card no-pad">
-        {data && (
+        {data && tab === 'sheet' && (
+          <RoomSheet date={date} rooms={data.rooms} stays={data.staying} onPay={setPaying} onCheckout={checkout} />
+        )}
+        {data && tab === 'notes' && (
+          <NotesPanel date={date} rooms={data.rooms} onCount={load} />
+        )}
+        {data && (tab === 'checkouts' || tab === 'staying') && (
           <StaysTable
             stays={tab === 'checkouts' ? data.checkouts : data.staying}
             highlightDate={date}

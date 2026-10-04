@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import api, { errorText } from '../api'
 import { useAuth } from '../auth'
 import { Alert, Modal, PageHead } from '../components/ui'
 import { addDays, daysBetween, fmtDate, money, nowTime, num, todayISO } from '../utils'
 
-const blank = () => ({
-  room: '',
-  check_in_date: todayISO(),
+const blank = (room = '', date = todayISO()) => ({
+  room,
+  check_in_date: date,
   check_in_time: nowTime(),
-  check_out_date: addDays(todayISO(), 1),
+  check_out_date: addDays(date, 1),
   check_out_time: '11:00',
   num_guests: 1,
   rate: '',
@@ -18,6 +18,7 @@ const blank = () => ({
   do_not_rent: false,
   cash: '', credit: '',
   comments: '',
+  adjustment: 0,
   guest_id: null,
 })
 
@@ -26,8 +27,11 @@ export default function CheckIn() {
   const editing = Boolean(id)
   const { user } = useAuth()
   const navigate = useNavigate()
+  const [params] = useSearchParams()
 
-  const [f, setF] = useState(blank)
+  // Opened from the Room sheet: /check-in?room=<id>&date=<YYYY-MM-DD>
+  const [f, setF] = useState(() => blank(params.get('room') || '', params.get('date') || todayISO()))
+  const [overlap, setOverlap] = useState(null)     // same room rented twice
   const [board, setBoard] = useState([])
   const [match, setMatch] = useState(null)       // returning guest suggestion
   const [dnrHit, setDnrHit] = useState(null)     // do-not-rent guest found
@@ -35,6 +39,8 @@ export default function CheckIn() {
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
   const [originalRoom, setOriginalRoom] = useState(null)
+  const [paidBefore, setPaidBefore] = useState(0)      // edit mode: payments already taken
+  const [balanceText, setBalanceText] = useState(null) // text while the clerk types a balance
 
   const set = (k) => (e) => {
     const v = e?.target ? (e.target.type === 'checkbox' ? e.target.checked : e.target.value) : e
@@ -46,12 +52,13 @@ export default function CheckIn() {
     if (!editing) return
     api.get(`/stays/${id}/`).then(({ data: s }) => {
       setOriginalRoom(s.room)
+      setPaidBefore(num(s.amount_paid))
       setF({
         ...blank(),
         room: s.room,
         check_in_date: s.check_in_date, check_in_time: s.check_in_time.slice(0, 5),
         check_out_date: s.check_out_date, check_out_time: s.check_out_time.slice(0, 5),
-        num_guests: s.num_guests, rate: s.rate, comments: s.comments,
+        num_guests: s.num_guests, rate: s.rate, comments: s.comments, adjustment: num(s.adjustment),
         name: s.guest.name, address: s.guest.address, city: s.guest.city, state: s.guest.state,
         zip_code: s.guest.zip_code, phone: s.guest.phone, car: s.guest.car,
         license_plate: s.guest.license_plate, do_not_rent: s.guest.do_not_rent, guest_id: s.guest.id,
@@ -62,12 +69,31 @@ export default function CheckIn() {
 
   // rooms + their status for the check-in date
   useEffect(() => {
-    api.get('/rooms/board/', { params: { date: f.check_in_date } }).then((r) => setBoard(r.data)).catch(() => {})
+    api.get('/rooms/board/', { params: { date: f.check_in_date } }).then((r) => {
+      setBoard(r.data)
+      // pre-fill the rate when the room came from the Room sheet
+      setF((p) => {
+        if (!p.room || p.rate) return p
+        const room = r.data.find((x) => String(x.id) === String(p.room))
+        return room ? { ...p, rate: room.default_rate } : p
+      })
+    }).catch(() => {})
   }, [f.check_in_date])
 
   const days = Math.max(daysBetween(f.check_in_date, f.check_out_date), 1)
-  const total = num(f.rate) * days
-  const balance = total - num(f.cash) - num(f.credit)
+  const roomCharge = num(f.rate) * days
+  const total = roomCharge + num(f.adjustment)
+  const paidNow = editing ? paidBefore : num(f.cash) + num(f.credit)
+  const balance = total - paidNow
+
+  // Clerk types a balance: keep rate and payments, store the difference as an adjustment.
+  function editBalance(e) {
+    const text = e.target.value
+    setBalanceText(text)
+    if (text === '' || isNaN(Number(text))) return
+    const adj = Number(text) - (roomCharge - paidNow)
+    setF((p) => ({ ...p, adjustment: Math.round(adj * 100) / 100 }))
+  }
 
   const roomsByType = useMemo(() => {
     const g = {}
@@ -108,8 +134,8 @@ export default function CheckIn() {
     setMatch(null)
   }
 
-  async function submit(e) {
-    e.preventDefault()
+  async function submit(e, allowOverlap = false) {
+    e?.preventDefault()
     if (!f.room) return setErr('Select a room.')
     if (f.do_not_rent && !dnrAck) {
       setDnrHit({ name: f.name, phone: f.phone, license_plate: f.license_plate, self: true })
@@ -117,15 +143,23 @@ export default function CheckIn() {
     }
     setBusy(true)
     setErr('')
-    const payload = { ...f, cash: f.cash || 0, credit: f.credit || 0, rate: f.rate || 0 }
+    const payload = {
+      ...f, cash: f.cash || 0, credit: f.credit || 0, rate: f.rate || 0,
+      adjustment: num(f.adjustment).toFixed(2), allow_overlap: allowOverlap,
+    }
     try {
       const { data } = editing
         ? await api.put(`/stays/${id}/`, payload)
         : await api.post('/stays/', payload)
       navigate(`/stays/${data.id}`)
     } catch (e2) {
-      setErr(errorText(e2))
       setBusy(false)
+      const overlapMsg = e2.response?.data?.overlap
+      if (overlapMsg) {
+        setOverlap(Array.isArray(overlapMsg) ? overlapMsg[0] : overlapMsg)
+        return
+      }
+      setErr(errorText(e2))
       window.scrollTo({ top: 0, behavior: 'smooth' })
     }
   }
@@ -157,9 +191,9 @@ export default function CheckIn() {
                     {rooms.map((r) => {
                       const busyRoom = r.occupied && r.id !== originalRoom
                       return (
-                        <option key={r.id} value={r.id} disabled={busyRoom}>
+                        <option key={r.id} value={r.id}>
                           {r.number} · {type} · {money(r.default_rate)}
-                          {busyRoom ? ` (occupied till ${fmtDate(r.check_out_date)})` : ''}
+                          {busyRoom ? ` (occupied: ${r.guest_name} till ${fmtDate(r.check_out_date)})` : ''}
                         </option>
                       )
                     })}
@@ -242,13 +276,29 @@ export default function CheckIn() {
                 <label>Credit
                   <input type="number" step="0.01" min="0" value={f.credit} onChange={set('credit')} placeholder="0.00" />
                 </label>
-                <div className={`readout ${balance > 0 ? 'readout-owed' : ''}`}>
-                  <span>Balance</span>
-                  <strong>{money(balance)}</strong>
-                </div>
               </>
             ) : (
-              <div className="readout span-2"><span>Payments</span><strong className="tiny">Add or view on the guest page</strong></div>
+              <div className="readout span-2">
+                <span>Paid so far</span>
+                <strong>{money(paidBefore)} <span className="tiny muted">(add payments on the guest page)</span></strong>
+              </div>
+            )}
+            <label>Balance
+              <input
+                type="number" step="0.01"
+                className={balance > 0 ? 'input-owed' : ''}
+                value={balanceText ?? balance.toFixed(2)}
+                onFocus={(e) => { setBalanceText(balance.toFixed(2)); e.target.select() }}
+                onChange={editBalance}
+                onBlur={() => setBalanceText(null)}
+              />
+            </label>
+            {num(f.adjustment) !== 0 && (
+              <div className="adj-note span-4">
+                Balance edited: total includes {num(f.adjustment) > 0 ? 'an extra charge of' : 'a discount of'}{' '}
+                <strong>{money(Math.abs(num(f.adjustment)))}</strong> ({money(roomCharge)} room charge {num(f.adjustment) > 0 ? '+' : '−'} {money(Math.abs(num(f.adjustment)))} = {money(total)}).
+                <button type="button" className="btn btn-sm ml" onClick={() => setF((p) => ({ ...p, adjustment: 0 }))}>Reset</button>
+              </div>
             )}
             <div className="readout">
               <span>Clerk</span>
@@ -267,6 +317,17 @@ export default function CheckIn() {
           </button>
         </div>
       </form>
+
+      {overlap && (
+        <Modal title="Room already rented" onClose={() => setOverlap(null)}>
+          <div className="alert alert-info">{overlap}</div>
+          <p>Rent this room to <strong>{f.name || 'this guest'}</strong> as well?</p>
+          <div className="form-actions">
+            <button className="btn" onClick={() => setOverlap(null)}>Pick another room</button>
+            <button className="btn btn-primary" onClick={() => { setOverlap(null); submit(null, true) }}>Yes, rent again</button>
+          </div>
+        </Modal>
+      )}
 
       {dnrHit && (
         <Modal title="⚠ Do Not Rent" onClose={() => setDnrHit(null)}>

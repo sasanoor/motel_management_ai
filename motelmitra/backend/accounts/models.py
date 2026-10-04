@@ -26,10 +26,12 @@ class User(AbstractUser):
     SUPER_ADMIN = "SUPER_ADMIN"
     CLIENT_ADMIN = "CLIENT_ADMIN"
     CLIENT_USER = "CLIENT_USER"
+    MAINTENANCE = "MAINTENANCE"
     ROLE_CHOICES = [
         (SUPER_ADMIN, "Super Admin"),
         (CLIENT_ADMIN, "Client Admin"),
         (CLIENT_USER, "Client User"),
+        (MAINTENANCE, "Maintenance"),
     ]
 
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default=CLIENT_USER)

@@ -95,6 +95,9 @@ export default function StayDetail() {
         <h2>Payments</h2>
         <div className="pay-summary">
           <div><span>Rate</span><strong>{money(s.rate)} × {s.num_days}</strong></div>
+          {num(s.adjustment) !== 0 && (
+            <div><span>{num(s.adjustment) > 0 ? 'Extra charge' : 'Discount'}</span><strong>{money(Math.abs(num(s.adjustment)))}</strong></div>
+          )}
           <div><span>Total</span><strong>{money(s.total_amount)}</strong></div>
           <div><span>Cash</span><strong>{money(s.cash_paid)}</strong></div>
           <div><span>Credit</span><strong>{money(s.credit_paid)}</strong></div>

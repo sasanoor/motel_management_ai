@@ -5,9 +5,11 @@ import CheckIn from './pages/CheckIn'
 import Dashboard from './pages/Dashboard'
 import Deleted from './pages/Deleted'
 import Login from './pages/Login'
+import Maintenance from './pages/Maintenance'
 import Reports from './pages/Reports'
 import { Clients, Directory, RoomTypes, Rooms, Users } from './pages/Setup'
 import StayDetail from './pages/StayDetail'
+import TodayReport from './pages/TodayReport'
 import Stays from './pages/Stays'
 
 function Guard({ allow, children }) {
@@ -20,6 +22,12 @@ function Guard({ allow, children }) {
 }
 
 const STAFF = ['CLIENT_ADMIN', 'CLIENT_USER']
+
+// Maintenance users only ever see their checkout-rooms screen.
+function Home() {
+  const { user } = useAuth()
+  return user.role === 'MAINTENANCE' ? <Maintenance /> : <Dashboard />
+}
 const ADMIN = ['CLIENT_ADMIN']
 const SUPER = ['SUPER_ADMIN']
 
@@ -29,13 +37,14 @@ export default function App() {
     <Routes>
       <Route path="/login" element={user ? <Navigate to="/" replace /> : <Login />} />
       <Route element={<Guard><Layout /></Guard>}>
-        <Route index element={<Guard allow={STAFF}><Dashboard /></Guard>} />
+        <Route index element={<Guard allow={[...STAFF, 'MAINTENANCE']}><Home /></Guard>} />
         <Route path="check-in" element={<Guard allow={STAFF}><CheckIn /></Guard>} />
         <Route path="stays" element={<Guard allow={STAFF}><Stays /></Guard>} />
         <Route path="stays/:id" element={<Guard allow={STAFF}><StayDetail /></Guard>} />
         <Route path="stays/:id/edit" element={<Guard allow={STAFF}><CheckIn /></Guard>} />
         <Route path="balances" element={<Guard allow={STAFF}><Stays balancesOnly /></Guard>} />
         <Route path="directory" element={<Guard allow={STAFF}><Directory /></Guard>} />
+        <Route path="today" element={<Guard allow={STAFF}><TodayReport /></Guard>} />
         <Route path="reports" element={<Reports />} />
         <Route path="rooms" element={<Guard allow={ADMIN}><Rooms /></Guard>} />
         <Route path="room-types" element={<Guard allow={ADMIN}><RoomTypes /></Guard>} />

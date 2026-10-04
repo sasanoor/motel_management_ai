@@ -11,7 +11,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from accounts.models import Client, User
-from motel.models import Guest, Payment, Room, RoomType, Stay
+from motel.models import Guest, Note, Payment, Room, RoomType, Stay
 
 
 class Command(BaseCommand):
@@ -38,6 +38,13 @@ class Command(BaseCommand):
         if created:
             clerk.set_password("clerk123")
             clerk.save()
+
+        maint, created = User.objects.get_or_create(
+            username="maint", defaults={"client": client, "role": User.MAINTENANCE, "first_name": "Jose"}
+        )
+        if created:
+            maint.set_password("maint123")
+            maint.save()
 
         types = {}
         for name, rate in [("King", 69), ("Queen", 59), ("Double", 75), ("Suite", 110),
@@ -84,6 +91,12 @@ class Command(BaseCommand):
                     Payment.objects.create(stay=stay, amount=Decimal(amt), method=method,
                                            paid_at=now + datetime.timedelta(days=din), clerk=clerk, is_initial=True)
 
+        Note.objects.create(client=client, date=today, room=Room.objects.get(client=client, number="101"),
+                            text="Guest reported the bathroom tap is dripping.", created_by=clerk)
+        Note.objects.create(client=client, date=today, room=Room.objects.get(client=client, number="105"),
+                            text="AC not cooling, please check filter.", created_by=clerk)
+        Note.objects.create(client=client, date=today, text="Ice machine on 2nd floor is empty.", created_by=clerk)
+
         self.stdout.write(self.style.SUCCESS(
-            "Demo data loaded. Logins: superadmin/admin123, owner/owner123, clerk/clerk123"
+            "Demo data loaded. Logins: superadmin/admin123, owner/owner123, clerk/clerk123, maint/maint123"
         ))

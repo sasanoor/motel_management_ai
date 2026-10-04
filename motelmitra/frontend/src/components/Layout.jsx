@@ -13,6 +13,7 @@ const NAV = {
     { to: '/check-in', label: 'New Check-in', icon: '➕' },
     { to: '/stays', label: 'Guests', icon: '🧾' },
     { to: '/balances', label: 'Balance Payments', icon: '💵' },
+    { to: '/today', label: "Today's Report", icon: '🗓️' },
     { to: '/reports', label: 'Reports', icon: '📊' },
     { section: 'Setup' },
     { to: '/rooms', label: 'Rooms', icon: '🛏️' },
@@ -21,11 +22,15 @@ const NAV = {
     { to: '/directory', label: 'Guest Directory', icon: '📇' },
     { to: '/deleted', label: 'Deleted Guests', icon: '🗑️' },
   ],
+  MAINTENANCE: [
+    { to: '/', label: 'Checkout Rooms', icon: '🧹', end: true },
+  ],
   CLIENT_USER: [
     { to: '/', label: 'Home', icon: '🏠', end: true },
     { to: '/check-in', label: 'New Check-in', icon: '➕' },
     { to: '/stays', label: 'Guests', icon: '🧾' },
     { to: '/balances', label: 'Balance Payments', icon: '💵' },
+    { to: '/today', label: "Today's Report", icon: '🗓️' },
     { to: '/reports', label: 'Reports', icon: '📊' },
     { to: '/directory', label: 'Guest Directory', icon: '📇' },
   ],

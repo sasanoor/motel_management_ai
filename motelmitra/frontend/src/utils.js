@@ -2,6 +2,7 @@ export const ROLES = {
   SUPER_ADMIN: 'Super Admin',
   CLIENT_ADMIN: 'Client Admin',
   CLIENT_USER: 'Client User',
+  MAINTENANCE: 'Maintenance',
 }
 
 export function todayISO() {

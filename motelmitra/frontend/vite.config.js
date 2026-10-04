@@ -7,8 +7,9 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': 'http://127.0.0.1:8000',
-      '/media': 'http://127.0.0.1:8000',
+      // changeOrigin: Django sees 127.0.0.1, so phones/tablets on WiFi work without editing ALLOWED_HOSTS
+      '/api': { target: 'http://127.0.0.1:8000', changeOrigin: true },
+      '/media': { target: 'http://127.0.0.1:8000', changeOrigin: true },
     },
   },
 })
