@@ -453,6 +453,10 @@ export function ChargesSettings() {
               <input type="number" step="0.01" min="0" value={f.late_fee} onChange={set('late_fee')} />
               <span className="hint">Offered at check-in and at checkout when the guest leaves after checkout time</span>
             </label>
+            <label>Early check-in fee ($ per occurrence)
+              <input type="number" step="0.01" min="0" value={f.early_checkin_fee} onChange={set('early_checkin_fee')} />
+              <span className="hint">Offered at check-in when the guest arrives before check-in time</span>
+            </label>
             <div className="span-2 form-actions">
               <button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Save charges'}</button>
             </div>

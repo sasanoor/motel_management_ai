@@ -12,12 +12,10 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# App version (the VERSION file next to start_app.bat). The screens compare it with their own copy
-# so an update is never half applied (new screens talking to an old server).
-try:
-    APP_VERSION = (BASE_DIR.parent / "VERSION").read_text().strip()
-except OSError:
-    APP_VERSION = "dev"
+# App version: APP_VERSION in the .env file next to start_app.bat (shipped with every update).
+# The screens show it and compare it with their own copy, so an update is never half applied.
+from dotenv import dotenv_values  # noqa: E402
+APP_VERSION = (dotenv_values(BASE_DIR.parent / ".env").get("APP_VERSION") or "dev").strip()
 load_dotenv(BASE_DIR / ".env")
 
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-only-insecure-key-change-me-in-production-0123456789")

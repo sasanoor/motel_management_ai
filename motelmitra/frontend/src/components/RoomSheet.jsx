@@ -49,23 +49,38 @@ export default function RoomSheet({ date, rooms, stays, onPay, onCheckout, onAdd
     tot.balance += Math.max(num(s.balance), 0)
   })
 
+  // Compact layout (9 columns): stay info merged, status under the guest name, actions pinned on the right.
+  const actions = (s) => (
+    <td className="row-actions sheet-actions" onClick={(e) => e.stopPropagation()}>
+      <div className="sheet-btns">
+        {num(s.balance) > 0 && <button className="btn btn-sm btn-warn" onClick={() => onPay(s)}>Pay</button>}
+        {s.status === 'CHECKED_IN' && <button className="btn btn-sm" onClick={() => onCheckout(s)}>Check out</button>}
+        {s.status === 'CHECKED_IN' && onAddStay && (
+          <button className="btn btn-sm btn-add" title="Guest stays longer / pays in advance" onClick={() => onAddStay(s)}>+ Stay</button>
+        )}
+      </div>
+    </td>
+  )
+  const checkInCell = (room) => (
+    <td className="row-actions sheet-actions">
+      <div className="sheet-btns"><button className="btn btn-sm btn-primary" onClick={() => checkIn(room)}>Check in</button></div>
+    </td>
+  )
+
   return (
-    <div className="table-wrap">
+    <div className="table-wrap sheet-wrap">
       <table className="table sheet">
         <thead>
           <tr>
             <th>Room</th>
             <th>Guest</th>
-            <th>Check-in → Check-out</th>
-            <th className="num">Days</th>
-            <th className="num">Current day</th>
-            <th>Days left</th>
+            <th>Stay dates</th>
+            <th>Day</th>
             <th className="num">Total</th>
             <th className="num">Cash</th>
             <th className="num">Credit</th>
             <th className="num">Balance</th>
-            <th>Status</th>
-            <th></th>
+            <th className="sheet-actions"></th>
           </tr>
         </thead>
         {sorted.map((room) => {
@@ -75,11 +90,8 @@ export default function RoomSheet({ date, rooms, stays, onPay, onCheckout, onAdd
               {list.length === 0 ? (
                 <tr>
                   <td><span className="room-chip">{room.number}</span><div className="tiny muted">{room.room_type}</div></td>
-                  <td colSpan={9} className="muted vacant-cell">Vacant · {money(room.default_rate)}</td>
-                  <td><span className="pill pill-grey">Vacant</span></td>
-                  <td className="row-actions">
-                    <button className="btn btn-sm btn-primary" onClick={() => checkIn(room)}>Check in</button>
-                  </td>
+                  <td colSpan={7} className="muted vacant-cell">Vacant · {money(room.default_rate)}</td>
+                  {checkInCell(room)}
                 </tr>
               ) : (
                 list.map((s, i) => {
@@ -90,19 +102,24 @@ export default function RoomSheet({ date, rooms, stays, onPay, onCheckout, onAdd
                     <tr className="clickable" onClick={() => navigate(`/stays/${s.id}`)}>
                       <td>
                         {i === 0 && <><span className="room-chip">{room.number}</span><div className="tiny muted">{room.room_type}</div></>}
-                        {i > 0 && <span className="tiny muted">{room.number} · rental {i + 1}</span>}
+                        {i > 0 && <span className="tiny muted">{room.number} · #{i + 1}</span>}
+                      </td>
+                      <td className="sheet-guest">
+                        <strong title={s.guest.name}>{s.guest.name}</strong>
+                        <div className="sheet-sub">
+                          {label(s)}
+                          {s.guest.do_not_rent && <span className="pill pill-red">DNR</span>}
+                          {s.guest.phone && <span className="tiny muted">{s.guest.phone}</span>}
+                        </div>
                       </td>
                       <td>
-                        <strong>{s.guest.name}</strong>{s.guest.do_not_rent && <span className="pill pill-red ml">DNR</span>}
-                        <div className="tiny muted">{s.guest.phone}</div>
+                        {fmtShort(s.check_in_date)} → {fmtShort(s.check_out_date)}
+                        <div className="tiny muted">{s.num_days} night{s.num_days > 1 ? 's' : ''} · {fmtTime(s.check_in_time)}</div>
                       </td>
                       <td>
-                        {fmtDate(s.check_in_date)} → {fmtDate(s.check_out_date)}
-                        <div className="tiny muted">{fmtTime(s.check_in_time)} → {fmtTime(s.check_out_time)}</div>
+                        <CurrentDay stay={s} date={date} />
+                        <div><DaysLeft stay={s} date={date} /></div>
                       </td>
-                      <td className="num">{s.num_days}</td>
-                      <td className="num"><CurrentDay stay={s} date={date} /></td>
-                      <td><DaysLeft stay={s} date={date} /></td>
                       <td className={`num ${stayOver ? 'sheet-earlier' : ''}`} title={stayOver ? `Checked in ${fmtDate(s.check_in_date)}; counted in that day's total` : ''}>
                         {money(s.total_amount)}<div className="tiny muted">{money(s.rate)}{rateTypeInfo(s.rate_type).short}</div>
                       </td>
@@ -111,7 +128,7 @@ export default function RoomSheet({ date, rooms, stays, onPay, onCheckout, onAdd
                           {num(s.balance) > 0
                             ? <span className="pill pill-warn">Part paid</span>
                             : <span className="pill pill-green">Paid</span>}
-                          <div className="tiny muted">{money(m.earlier)}{m.lastDay ? ` by ${fmtDate(m.lastDay)}` : ''}</div>
+                          <div className="tiny muted">{money(m.earlier)}{m.lastDay ? ` by ${fmtShort(m.lastDay)}` : ''}</div>
                         </td>
                       ) : (
                         <>
@@ -123,22 +140,13 @@ export default function RoomSheet({ date, rooms, stays, onPay, onCheckout, onAdd
                         </>
                       )}
                       <td className="num"><BalanceCell value={s.balance} /></td>
-                      <td>{label(s)}</td>
-                      <td className="row-actions" onClick={(e) => e.stopPropagation()}>
-                        {num(s.balance) > 0 && <button className="btn btn-sm btn-warn" onClick={() => onPay(s)}>Pay</button>}
-                        {s.status === 'CHECKED_IN' && <button className="btn btn-sm" onClick={() => onCheckout(s)}>Check out</button>}
-                        {s.status === 'CHECKED_IN' && onAddStay && (
-                          <button className="btn btn-sm btn-add" title="Guest stays longer / pays in advance" onClick={() => onAddStay(s)}>+ Add stay</button>
-                        )}
-                      </td>
+                      {actions(s)}
                     </tr>
                     {i === list.length - 1 && freeTonight(list) && (
                       <tr className="rent-again">
                         <td></td>
-                        <td colSpan={10} className="muted vacant-cell">Free for tonight</td>
-                        <td className="row-actions">
-                          <button className="btn btn-sm btn-primary" onClick={() => checkIn(room)}>Check in</button>
-                        </td>
+                        <td colSpan={7} className="muted vacant-cell">Free for tonight</td>
+                        {checkInCell(room)}
                       </tr>
                     )}
                   </Fragment>
@@ -150,20 +158,27 @@ export default function RoomSheet({ date, rooms, stays, onPay, onCheckout, onAdd
         })}
         <tfoot>
           <tr className="sheet-total">
-            <td colSpan={6}>
+            <td colSpan={4}>
               Totals for {fmtDate(date)}
-              <div className="tiny muted">Total = {tot.arrivals} check-in{tot.arrivals === 1 ? '' : 's'} on this date · Cash / Credit = money taken on this date</div>
+              <div className="tiny muted">Total = {tot.arrivals} check-in{tot.arrivals === 1 ? '' : 's'} on this date · Cash / Credit = taken on this date</div>
             </td>
             <td className="num">{money(tot.total)}</td>
             <td className="num">{money(tot.cash)}</td>
             <td className="num">{money(tot.credit)}</td>
             <td className="num"><span className={tot.balance > 0 ? 'owed' : ''}>{money(tot.balance)}</span></td>
-            <td colSpan={2} className="num"><strong>{money(tot.cash + tot.credit)}</strong><div className="tiny muted">collected</div></td>
+            <td className="num sheet-actions"><strong>{money(tot.cash + tot.credit)}</strong><div className="tiny muted">collected</div></td>
           </tr>
         </tfoot>
       </table>
     </div>
   )
+}
+
+// 10/05 (adds the year only when it is not this year)
+function fmtShort(iso) {
+  if (!iso) return ''
+  const [y, m, d] = iso.split('-')
+  return y === String(new Date().getFullYear()) ? `${m}/${d}` : `${m}/${d}/${y.slice(2)}`
 }
 
 export function DaysLeft({ stay, date }) {

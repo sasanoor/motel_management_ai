@@ -123,6 +123,9 @@ export default function Layout() {
           <button className="btn btn-ghost-light" onClick={() => { logout(); navigate('/login') }}>
             Log out
           </button>
+          <div className="app-ver" title={serverVersion && serverVersion !== APP_VERSION ? `Server: ${serverVersion}` : 'Screens and server are on the same version'}>
+            MotelMitra v{APP_VERSION}
+          </div>
         </div>
       </aside>
       <div className="main">

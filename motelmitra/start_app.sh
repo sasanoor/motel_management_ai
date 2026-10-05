@@ -38,7 +38,7 @@ links() {
     [ "$LAN" = "1" ] && { echo "WiFi devices:     http://$IP:$FRONT_PORT"; echo "Django admin:     http://$IP:$BACK_PORT/admin/"; }
     echo; echo "The WiFi address can change if the router restarts. Start the app again to refresh it."; } > "$ROOT/app_links.txt"
 }
-APPVER="$(cat "$ROOT/VERSION" 2>/dev/null | tr -d '[:space:]')"
+APPVER="$(sed -n 's/^APP_VERSION=//p' "$ROOT/.env" 2>/dev/null | tr -d '[:space:]')"
 if curl -s -o /dev/null http://localhost:5173; then
   RUNNING="$(curl -s http://127.0.0.1:8000/api/version/ | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')"
   if [ "$RUNNING" = "$APPVER" ]; then

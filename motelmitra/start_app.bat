@@ -54,7 +54,7 @@ if "%LAN%"=="1" (
 REM ---------- already running? Keep it only if the running server is this version.
 REM            After an update (new files copied in) it is restarted so new code and database changes load.
 set "APPVER=dev"
-if exist "%ROOT%VERSION" set /p APPVER=<"%ROOT%VERSION"
+if exist "%ROOT%.env" for /f "tokens=2 delims==" %%v in ('findstr /b /c:"APP_VERSION=" "%ROOT%.env"') do set "APPVER=%%v"
 powershell -NoProfile -Command "try{Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 http://127.0.0.1:%FRONT_PORT% | Out-Null; exit 0}catch{exit 1}"
 if errorlevel 1 goto :not_running
 powershell -NoProfile -Command "try{$v=(Invoke-RestMethod -TimeoutSec 3 http://127.0.0.1:%BACK_PORT%/api/version/).version; if($v -eq '%APPVER%'){exit 0}else{exit 1}}catch{exit 1}"

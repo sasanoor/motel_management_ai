@@ -2,12 +2,16 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import api, { errorText } from '../api'
 import { useAuth } from '../auth'
-import { Alert, BalanceCell, Empty, PageHead, Stat } from '../components/ui'
+import AddStayModal from '../components/AddStayModal'
+import CheckoutModal from '../components/CheckoutModal'
+import ExpenseModal from '../components/ExpenseModal'
+import RoomSheet from '../components/RoomSheet'
+import { Alert, BalanceCell, Empty, PageHead, PaymentModal, Stat } from '../components/ui'
 import { addDays, fmtDate, fmtDateTime, fmtTime, money, num, todayISO, rateTypeInfo } from '../utils'
 
 /** End-of-day / shift handover report for the front desk. */
 export default function TodayReport() {
-  const { user } = useAuth()
+  const { user, isAdmin } = useAuth()
   const navigate = useNavigate()
   const [params] = useSearchParams()
   const [date, setDate] = useState(params.get('date') || todayISO())
@@ -15,12 +19,32 @@ export default function TodayReport() {
   const [result, setResult] = useState(null) // { key, data }
   const [err, setErr] = useState('')
   const key = `${date}|${mine}`
+  // Room sheet: same component and same /dashboard/ data as Home, so both always match
+  const [sheet, setSheet] = useState(null)   // { date, data }
+  const [tick, setTick] = useState(0)        // bump to reload after a payment / checkout / add stay
+  const [paying, setPaying] = useState(null)
+  const [checkingOut, setCheckingOut] = useState(null)
+  const [adding, setAdding] = useState(null)
+  const [expense, setExpense] = useState(null)  // {} = new, or the expense being edited
+  const reload = () => setTick((t) => t + 1)
 
   useEffect(() => {
     api.get('/reports/today/', { params: { date, mine: mine ? 1 : undefined } })
       .then((r) => { setResult({ key: `${date}|${mine}`, data: r.data }); setErr('') })
       .catch((e) => setErr(errorText(e)))
-  }, [date, mine])
+  }, [date, mine, tick])
+
+  useEffect(() => {
+    api.get('/dashboard/', { params: { date } })
+      .then((r) => setSheet({ date, data: r.data }))
+      .catch(() => {})
+  }, [date, tick])
+  const sheetData = sheet?.date === date ? sheet.data : null
+
+  async function deleteExpense(x) {
+    if (!window.confirm(`Delete expense "${x.description}" (${money(x.amount)})?`)) return
+    try { await api.delete(`/expenses/${x.id}/`); reload() } catch (e) { setErr(errorText(e)) }
+  }
 
   const d = result?.key === key ? result.data : null
   const isToday = date === todayISO()
@@ -54,8 +78,12 @@ export default function TodayReport() {
 
       {d && (
         <>
-          <h2 className="section-title">Cash drawer</h2>
+          <div className="section-head">
+            <h2 className="section-title">Cash drawer</h2>
+            {(isAdmin || isToday) && <button className="btn btn-sm no-print" onClick={() => setExpense({})}>+ Add expense</button>}
+          </div>
           <div className="stats">
+            <Stat label="Cash in drawer" value={money(d.money.cash_in_drawer)} tone={num(d.money.cash_in_drawer) < 0 ? 'bad' : 'good'} />
             <Stat label="Cash collected" value={money(d.money.cash)} tone="good" />
             <Stat label="Credit collected" value={money(d.money.credit)} />
             <Stat label="Total collected" value={money(d.money.collected)} tone="good" />
@@ -63,7 +91,40 @@ export default function TodayReport() {
             <Stat label="From today's check-ins" value={money(d.money.from_todays_checkins)} />
             <Stat label="Balance payments (earlier stays)" value={money(d.money.from_earlier_stays)} />
             <Stat label="Unpaid from today's check-ins" value={money(d.money.unpaid_from_todays_checkins)} tone={num(d.money.unpaid_from_todays_checkins) > 0 ? 'bad' : ''} />
+            <Stat label="Expenses (cash)" value={money(d.money.expenses_cash)} tone={num(d.money.expenses_cash) > 0 ? 'bad' : ''} />
+            <Stat label="Expenses (card)" value={money(d.money.expenses_card)} />
           </div>
+          <p className="tiny muted drawer-note">Cash in drawer = cash collected {money(d.money.cash)} − cash expenses {money(d.money.expenses_cash)}</p>
+
+          {d.expenses.length > 0 && (
+            <div className="card no-pad expense-card">
+              <div className="table-wrap">
+                <table className="table">
+                  <thead><tr><th>Time</th><th>Description</th><th>Paid by</th><th className="num">Amount</th><th>Clerk</th><th className="no-print"></th></tr></thead>
+                  <tbody>
+                    {d.expenses.map((x) => (
+                      <tr key={x.id}>
+                        <td>{fmtTime(new Date(x.created_at).toTimeString().slice(0, 5))}</td>
+                        <td className="wrap">{x.description}</td>
+                        <td>{x.method === 'CASH' ? 'Cash' : 'Card'}</td>
+                        <td className="num">{money(x.amount)}</td>
+                        <td>{x.clerk_name}</td>
+                        <td className="row-actions no-print">
+                          {x.can_edit && <>
+                            <button className="btn btn-sm" onClick={() => setExpense(x)}>Edit</button>
+                            <button className="btn btn-sm btn-danger-outline" onClick={() => deleteExpense(x)}>Delete</button>
+                          </>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr><td colSpan={3}>Expenses ({d.expenses.length})</td><td className="num">{money(d.money.expenses)}</td><td colSpan={2}></td></tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          )}
 
           <h2 className="section-title">Rooms</h2>
           <div className="stats">
@@ -73,6 +134,14 @@ export default function TodayReport() {
             <Stat label="Occupied tonight" value={`${d.summary.occupied} / ${d.summary.total_rooms}`} />
             <Stat label="Available" value={d.summary.available} tone="good" />
             <Stat label="Occupancy" value={`${d.summary.occupancy_pct}%`} />
+          </div>
+
+          <h2 className="section-title">Room sheet{mine && <span className="tiny muted"> · all clerks</span>}</h2>
+          <div className="card no-pad report-sheet">
+            {sheetData
+              ? <RoomSheet date={date} rooms={sheetData.rooms} stays={sheetData.staying}
+                  onPay={setPaying} onCheckout={setCheckingOut} onAddStay={setAdding} />
+              : <Empty>Loading…</Empty>}
           </div>
 
           {d.by_clerk.length > 0 && (
@@ -179,6 +248,11 @@ export default function TodayReport() {
               </div>
             )}
           </div>
+
+          {paying && <PaymentModal stay={paying} onClose={() => setPaying(null)} onSaved={() => { setPaying(null); reload() }} />}
+          {checkingOut && <CheckoutModal stay={checkingOut} onClose={() => setCheckingOut(null)} onDone={reload} />}
+          {expense && <ExpenseModal expense={expense} date={date} onClose={() => setExpense(null)} onSaved={() => { setExpense(null); reload() }} />}
+          {adding && <AddStayModal stay={adding} onClose={() => setAdding(null)} onSaved={() => { setAdding(null); reload() }} />}
 
           <div className="print-only signoff">
             <div>Clerk signature: ____________________</div>

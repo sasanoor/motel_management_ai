@@ -47,7 +47,11 @@ class Guest(models.Model):
     """A person. One guest can have many stays (repeat visits)."""
 
     client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="guests")
-    name = models.CharField(max_length=150)
+    # Full name, kept in step with the parts below (search, lists and reports use it)
+    name = models.CharField(max_length=150, blank=True)
+    first_name = models.CharField(max_length=60, blank=True)
+    middle_name = models.CharField(max_length=60, blank=True)
+    last_name = models.CharField(max_length=60, blank=True)
     address = models.CharField(max_length=255, blank=True)
     city = models.CharField(max_length=100, blank=True)
     state = models.CharField(max_length=50, blank=True)
@@ -55,6 +59,7 @@ class Guest(models.Model):
     phone = models.CharField(max_length=30, blank=True, db_index=True)
     car = models.CharField(max_length=100, blank=True)
     license_plate = models.CharField(max_length=30, blank=True, db_index=True)
+    dl_number = models.CharField("Driving licence number", max_length=40, blank=True, db_index=True)
     do_not_rent = models.BooleanField(default=False)
     dnr_reason = models.CharField(max_length=255, blank=True)
     dnr_marked_at = models.DateTimeField(null=True, blank=True)
@@ -71,6 +76,15 @@ class Guest(models.Model):
 
     def save(self, *args, **kwargs):
         from django.utils import timezone
+        # name parts win; an old-style full name only is split into parts
+        parts = [x.strip() for x in (self.first_name, self.middle_name, self.last_name)]
+        if any(parts):
+            self.first_name, self.middle_name, self.last_name = parts
+            self.name = join_name(*parts)
+        elif self.name:
+            self.name = " ".join(self.name.split())
+            self.first_name, self.middle_name, self.last_name = split_name(self.name)
+        self.dl_number = " ".join((self.dl_number or "").upper().split())
         if self.do_not_rent and not self.dnr_marked_at:
             self.dnr_marked_at = timezone.now()
         if not self.do_not_rent:
@@ -80,6 +94,20 @@ class Guest(models.Model):
 
     def __str__(self):
         return self.name
+
+
+def split_name(full):
+    """'John Q Public' -> ('John', 'Q', 'Public'); 'Cher' -> ('Cher', '', '')."""
+    words = (full or "").split()
+    if not words:
+        return "", "", ""
+    if len(words) == 1:
+        return words[0], "", ""
+    return words[0], " ".join(words[1:-1]), words[-1]
+
+
+def join_name(first, middle, last):
+    return " ".join(x.strip() for x in (first, middle, last) if x and x.strip())
 
 
 def months_between(start, end):
@@ -128,6 +156,7 @@ class Stay(models.Model):
     extra_person_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     card_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     late_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    early_checkin_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     # early checkout: room charge for the nights actually used, and the booking as it was before
     room_charge_override = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     early_snapshot = models.JSONField(null=True, blank=True)
@@ -185,7 +214,8 @@ class Stay(models.Model):
     @property
     def charges_total(self):
         """Pets + extra persons + card fee + late fee."""
-        return sum((Decimal(x or 0) for x in (self.pet_fee, self.extra_person_fee, self.card_fee, self.late_fee)),
+        return sum((Decimal(x or 0) for x in (self.pet_fee, self.extra_person_fee, self.card_fee, self.late_fee,
+                                                self.early_checkin_fee)),
                    Decimal("0"))
 
     @property
@@ -278,3 +308,28 @@ class DayClose(models.Model):
 
     def __str__(self):
         return f"{self.client} closed {self.date}"
+
+
+class Expense(models.Model):
+    """Money paid out by the front desk (supplies, repairs ...). Counted on its business day."""
+
+    CASH = "CASH"
+    CREDIT = "CREDIT"
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="expenses")
+    business_date = models.DateField(db_index=True)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    method = models.CharField(max_length=10, choices=[(CASH, "Cash"), (CREDIT, "Card")], default=CASH)
+    description = models.CharField(max_length=255)
+    clerk = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="expenses")
+    created_at = models.DateTimeField(auto_now_add=True)
+    # deleted expenses are kept for the record
+    is_deleted = models.BooleanField(default=False)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                   related_name="expenses_deleted")
+
+    class Meta:
+        ordering = ["business_date", "created_at"]
+
+    def __str__(self):
+        return f"{self.business_date} {self.method} {self.amount} {self.description}"

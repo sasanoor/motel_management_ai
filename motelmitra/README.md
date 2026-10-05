@@ -18,7 +18,9 @@ Motel management system. Django REST + MySQL backend, React (Vite) frontend.
 | Add stay | Room sheet and guest page: guest stays longer (pays in advance). Pick extra nights / weeks / months at the same rate, new checkout shown, take cash / card now. Same entry; asks first if the room is booked later |
 | Balance payments | List of guests who owe money. Each payment adds to previous ones and rolls into the original check-in date report |
 | Delete / recover | Client admin soft-deletes guests; separate "Deleted Guests" menu to recover |
-| Reports | Daily check-ins, collections (cash vs credit), outstanding balances, occupancy. CSV export and print |
+| Reports | Daily check-ins, collections (cash vs credit), outstanding balances, occupancy, payment history (by room, dates and / or guest name: guest details and every payment and refund). CSV export and print |
+| Guests list | Paged (25 / 50 / 100 per page) so large databases stay fast; Balance Payments too |
+| Version | `APP_VERSION` in the `.env` next to start_app.bat; shown on the login page and at the bottom of the menu |
 | Multi-tenant | Every motel only sees its own data |
 | v2 ready | `Guest.license_card` field already exists for license card upload |
 
@@ -146,6 +148,8 @@ python manage.py test motel
 
 1. Copy the new files over the old folder (keep `backend\.env` and your database).
 2. Double-click **start_app.bat**. If the old version is still running it is restarted automatically and database updates are applied.
+
+The version number is in the `.env` file next to start_app.bat (APP_VERSION). Database settings stay in `backend\.env`.
 
 If the screens ever show a red "server is still running the old version" bar, run **stop_app.bat** then **start_app.bat**.
 

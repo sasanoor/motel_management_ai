@@ -100,6 +100,10 @@ export function PaymentModal({ stay, onClose, onSaved }) {
     setAdj(r2(Number(text) - base))
   }
 
+  function balanceInCash() {
+    setCash(Math.max(r2(owed + adj + cardFee - num(credit)), 0).toFixed(2))
+  }
+
   function balanceOnCard() {
     const due = owed + adj - num(cash)
     if (due <= 0) return
@@ -135,6 +139,7 @@ export function PaymentModal({ stay, onClose, onSaved }) {
         <div className="subhead span-2">Payment collected</div>
         <label>Cash
           <input type="number" step="0.01" min="0" value={cash} onChange={(e) => { setCash(e.target.value); setAdj(0) }} placeholder="0.00" autoFocus />
+          <button type="button" className="link-btn" onClick={balanceInCash}>Put balance in cash</button>
         </label>
         <label>Credit / card
           <input type="number" step="0.01" min="0" value={credit} onChange={(e) => { setCredit(e.target.value); setAdj(0) }} placeholder="0.00" />
@@ -234,5 +239,36 @@ export function RefundModal({ stay, onClose, onSaved }) {
         </div>
       </form>
     </Modal>
+  )
+}
+
+/** Page links under a list: "Showing 26–50 of 312", rows per page, ‹ 1 … 4 5 6 … 13 ›. */
+export function Pagination({ page, pages, count, pageSize, onPage, onPageSize, sizes = [25, 50, 100] }) {
+  if (!count) return null
+  const from = (page - 1) * pageSize + 1
+  const to = Math.min(page * pageSize, count)
+  const nums = []
+  for (let i = 1; i <= pages; i++) {
+    if (i === 1 || i === pages || Math.abs(i - page) <= 2) nums.push(i)
+    else if (nums[nums.length - 1] !== '…') nums.push('…')
+  }
+  return (
+    <div className="pager">
+      <span className="muted">Showing <strong>{from}–{to}</strong> of <strong>{count}</strong></span>
+      <div className="pager-pages">
+        <button className="btn btn-sm" disabled={page <= 1} onClick={() => onPage(page - 1)}>‹ Prev</button>
+        {nums.map((n, i) => n === '…'
+          ? <span key={`g${i}`} className="pager-gap">…</span>
+          : <button key={n} className={`btn btn-sm ${n === page ? 'btn-primary' : ''}`} onClick={() => onPage(n)}>{n}</button>)}
+        <button className="btn btn-sm" disabled={page >= pages} onClick={() => onPage(page + 1)}>Next ›</button>
+      </div>
+      {onPageSize && (
+        <label className="inline pager-size">Rows
+          <select value={pageSize} onChange={(e) => onPageSize(Number(e.target.value))}>
+            {sizes.map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </label>
+      )}
+    </div>
   )
 }

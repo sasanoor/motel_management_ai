@@ -4,7 +4,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
 
-from .models import Guest, Note, Payment, Room, RoomType, Stay
+from .models import Expense, Guest, Note, Payment, Room, RoomType, Stay, join_name, split_name
 
 ZERO = Decimal("0.00")
 
@@ -69,8 +69,8 @@ class GuestSerializer(serializers.ModelSerializer):
     class Meta:
         model = Guest
         fields = [
-            "id", "name", "address", "city", "state", "zip_code", "phone", "car",
-            "license_plate", "do_not_rent", "dnr_reason", "dnr_marked_at", "dnr_marked_by_name",
+            "id", "name", "first_name", "middle_name", "last_name", "address", "city", "state", "zip_code", "phone", "car",
+            "license_plate", "dl_number", "do_not_rent", "dnr_reason", "dnr_marked_at", "dnr_marked_by_name",
             "stay_count", "last_stay", "created_at",
         ]
         read_only_fields = ["dnr_marked_at"]
@@ -79,10 +79,8 @@ class GuestSerializer(serializers.ModelSerializer):
         u = obj.dnr_marked_by
         return (u.get_full_name() or u.username) if u else ""
 
-    def validate_name(self, value):
-        if not value.strip():
-            raise serializers.ValidationError("Name is required.")
-        return value.strip()
+    def validate(self, attrs):
+        return clean_name_parts(attrs, self.instance)
 
     def get_stay_count(self, obj):
         return obj.stays.filter(is_deleted=False).count()
@@ -142,7 +140,7 @@ class StaySerializer(serializers.ModelSerializer):
             "id", "guest", "room", "room_number", "room_type",
             "check_in_date", "check_in_time", "check_out_date", "check_out_time",
             "num_guests", "num_days", "rate_type", "periods", "rate", "room_charge", "adjustment",
-            "pets", "pet_fee", "extra_persons", "extra_person_fee", "card_fee", "late_fee",
+            "pets", "pet_fee", "extra_persons", "extra_person_fee", "card_fee", "late_fee", "early_checkin_fee",
             "charges_total", "total_amount", "early", "refunded",
             "amount_paid", "cash_paid", "credit_paid", "balance",
             "clerk", "clerk_name", "comments", "status", "checked_out_at", "renewed_from", "renewed_to",
@@ -194,7 +192,27 @@ class StaySerializer(serializers.ModelSerializer):
         return str(obj.total_amount - self._sum(obj))
 
 
-GUEST_FIELDS = ["name", "address", "city", "state", "zip_code", "phone", "car", "license_plate", "do_not_rent"]
+def clean_name_parts(attrs, instance=None):
+    """
+    Guest name: first / middle / last (screens require first and last), kept with the full name.
+    An old-style full name only is split into parts. Returns attrs.
+    """
+    parts_sent = any(k in attrs for k in ("first_name", "middle_name", "last_name"))
+    if parts_sent:
+        first = (attrs.get("first_name", getattr(instance, "first_name", "")) or "").strip()
+        middle = (attrs.get("middle_name", getattr(instance, "middle_name", "")) or "").strip()
+        last = (attrs.get("last_name", getattr(instance, "last_name", "")) or "").strip()
+        attrs.update(first_name=first, middle_name=middle, last_name=last, name=join_name(first, middle, last))
+    elif "name" in attrs:
+        full = " ".join((attrs["name"] or "").split())
+        attrs["first_name"], attrs["middle_name"], attrs["last_name"] = split_name(full)
+        attrs["name"] = full
+    if ("name" in attrs or instance is None) and not attrs.get("name") and not getattr(instance, "name", ""):
+        raise serializers.ValidationError({"first_name": "Enter the guest's name."})
+    return attrs
+
+
+GUEST_FIELDS = ["name", "first_name", "middle_name", "last_name", "address", "city", "state", "zip_code", "phone", "car", "license_plate", "dl_number", "do_not_rent"]
 
 
 class StayWriteSerializer(serializers.ModelSerializer):
@@ -202,7 +220,10 @@ class StayWriteSerializer(serializers.ModelSerializer):
 
     # guest details (flat on the form)
     guest_id = serializers.IntegerField(required=False, allow_null=True, write_only=True)
-    name = serializers.CharField(max_length=150, write_only=True)
+    name = serializers.CharField(max_length=150, required=False, allow_blank=True, write_only=True)
+    first_name = serializers.CharField(max_length=60, required=False, allow_blank=True, write_only=True)
+    middle_name = serializers.CharField(max_length=60, required=False, allow_blank=True, write_only=True)
+    last_name = serializers.CharField(max_length=60, required=False, allow_blank=True, write_only=True)
     address = serializers.CharField(max_length=255, required=False, allow_blank=True, write_only=True)
     city = serializers.CharField(max_length=100, required=False, allow_blank=True, write_only=True)
     state = serializers.CharField(max_length=50, required=False, allow_blank=True, write_only=True)
@@ -210,6 +231,7 @@ class StayWriteSerializer(serializers.ModelSerializer):
     phone = serializers.CharField(max_length=30, required=False, allow_blank=True, write_only=True)
     car = serializers.CharField(max_length=100, required=False, allow_blank=True, write_only=True)
     license_plate = serializers.CharField(max_length=30, required=False, allow_blank=True, write_only=True)
+    dl_number = serializers.CharField(max_length=40, required=False, allow_blank=True, write_only=True)
     do_not_rent = serializers.BooleanField(required=False, default=False, write_only=True)
 
     # money collected at check-in
@@ -227,7 +249,7 @@ class StayWriteSerializer(serializers.ModelSerializer):
         fields = [
             "id", "room", "check_in_date", "check_in_time", "check_out_date", "check_out_time",
             "num_guests", "rate_type", "periods", "rate", "adjustment", "pets", "pet_fee", "extra_persons", "extra_person_fee", "card_fee",
-            "late_fee", "comments",
+            "late_fee", "early_checkin_fee", "comments",
             "guest_id", *GUEST_FIELDS, "cash", "credit", "allow_overlap", "renew_from",
         ]
 
@@ -238,6 +260,8 @@ class StayWriteSerializer(serializers.ModelSerializer):
         return room
 
     def validate(self, attrs):
+        if not self.instance or any(k in attrs for k in ("name", "first_name", "middle_name", "last_name")):
+            clean_name_parts(attrs, self.instance.guest if self.instance else None)
         inst = self.instance
         cin = attrs.get("check_in_date", inst.check_in_date if inst else None)
         cout = attrs.get("check_out_date", inst.check_out_date if inst else None)
@@ -256,7 +280,7 @@ class StayWriteSerializer(serializers.ModelSerializer):
             periods = Stay.calc_periods(rate_type, cin, cout, given)
             attrs["periods"] = periods
             fees = ZERO
-            for f in ("pet_fee", "extra_person_fee", "card_fee", "late_fee"):
+            for f in ("pet_fee", "extra_person_fee", "card_fee", "late_fee", "early_checkin_fee"):
                 v = attrs.get(f, getattr(inst, f) if inst else ZERO) or ZERO
                 if v < 0:
                     raise serializers.ValidationError({f: "Cannot be negative."})
@@ -305,6 +329,10 @@ class StayWriteSerializer(serializers.ModelSerializer):
         guest = None
         if guest_id:
             guest = Guest.objects.filter(client=client, pk=guest_id).first()
+        if guest is None and guest_data.get("dl_number", "").strip():
+            dl = "".join(ch for ch in guest_data["dl_number"] if ch.isalnum()).upper()
+            guest = next((g for g in Guest.objects.filter(client=client).exclude(dl_number="")
+                          if "".join(ch for ch in g.dl_number if ch.isalnum()).upper() == dl), None)
         if guest is None and guest_data.get("phone"):
             guest = Guest.objects.filter(client=client, phone=guest_data["phone"]).first()
         if guest is None:
@@ -374,3 +402,52 @@ class NoteSerializer(serializers.ModelSerializer):
         if not value.strip():
             raise serializers.ValidationError("Note cannot be empty.")
         return value.strip()
+
+
+class ExpenseSerializer(serializers.ModelSerializer):
+    clerk_name = serializers.SerializerMethodField()
+    can_edit = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Expense
+        fields = ["id", "business_date", "amount", "method", "description", "clerk", "clerk_name", "created_at", "can_edit"]
+        read_only_fields = ["clerk", "created_at"]
+        extra_kwargs = {"business_date": {"required": False}}
+
+    def get_clerk_name(self, obj):
+        return (obj.clerk.get_full_name() or obj.clerk.username) if obj.clerk else ""
+
+    def get_can_edit(self, obj):
+        request = self.context.get("request")
+        return bool(request and expense_editable(obj, request.user))
+
+    def validate_amount(self, v):
+        if v <= 0:
+            raise serializers.ValidationError("Amount must be greater than zero.")
+        return v
+
+    def validate_description(self, v):
+        if not v.strip():
+            raise serializers.ValidationError("Enter what the money was spent on.")
+        return v.strip()
+
+    def validate_business_date(self, v):
+        from django.utils import timezone as tz
+        from . import business
+        client = self.context["request"].user.client
+        from accounts.models import User
+        biz = business.business_date(client)
+        if v > max(tz.localdate(), biz):
+            raise serializers.ValidationError("Date cannot be in the future.")
+        if self.context["request"].user.role != User.CLIENT_ADMIN and v != biz:
+            raise serializers.ValidationError("Only the admin can add an expense for another day.")
+        return v
+
+
+def expense_editable(expense, user):
+    """Client admin: any expense. Front desk: only their own, on the current business day."""
+    from accounts.models import User
+    from . import business
+    if user.role == User.CLIENT_ADMIN:
+        return True
+    return expense.clerk_id == user.id and expense.business_date == business.business_date(expense.client)

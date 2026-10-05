@@ -16,6 +16,7 @@ router.register("rooms", mv.RoomViewSet, basename="room")
 router.register("guests", mv.GuestViewSet, basename="guest")
 router.register("stays", mv.StayViewSet, basename="stay")
 router.register("notes", mv.NoteViewSet, basename="note")
+router.register("expenses", mv.ExpenseViewSet, basename="expense")
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -36,5 +37,6 @@ urlpatterns = [
     path("api/reports/collections/", mv.report_collections),
     path("api/reports/outstanding/", mv.report_outstanding),
     path("api/reports/occupancy/", mv.report_occupancy),
+    path("api/reports/payment-history/", mv.report_payment_history),
     path("api/", include(router.urls)),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

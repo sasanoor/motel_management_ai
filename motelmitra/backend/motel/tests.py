@@ -487,11 +487,13 @@ class BusinessDayTests(APITestCase):
         st = self.client.get("/api/business-day/").data
         self.assertEqual(st["business_date"], self.today)
         room = next(x for x in self.client.get("/api/rooms/board/").data if not x["occupied"])
+        # demo data may already have cash on this day (depends on the hour it was loaded): compare the change
+        base_cash = float(self.client.get("/api/business-day/preview/").data["summary"]["cash"])
         s = self.client.post("/api/stays/", {"room": room["id"], "check_in_date": str(self.today), "check_in_time": "14:00",
             "check_out_date": str(self.today + datetime.timedelta(days=2)), "check_out_time": "11:00", "num_guests": 1,
             "rate": "35", "name": "Pays Later", "cash": "18"}, format="json").data
         prev = self.client.get("/api/business-day/preview/").data
-        self.assertEqual(prev["summary"]["cash"], "18.00")
+        self.assertAlmostEqual(float(prev["summary"]["cash"]) - base_cash, 18.0, places=2)
 
         # Night Audit: day closes, next day starts right away
         self.assertEqual(self.client.post("/api/business-day/close/", {"date": str(self.today - datetime.timedelta(days=1))}, format="json").status_code, 400)
@@ -501,7 +503,7 @@ class BusinessDayTests(APITestCase):
         self.assertEqual(r.data["business_date"], tomorrow)
         self.assertFalse(r.data["can_close"])   # tomorrow has not started on the calendar
         self.assertEqual(self.client.post("/api/business-day/close/", {"date": str(tomorrow)}, format="json").status_code, 400)
-        self.assertEqual(r.data["last_close"]["summary"]["cash"], "18.00")
+        self.assertAlmostEqual(float(r.data["last_close"]["summary"]["cash"]) - base_cash, 18.0, places=2)
 
         # balance paid now counts on the new business day, not the check-in day
         r = self.client.post(f"/api/stays/{s['id']}/payments/", {"cash": "52", "credit": "0"}, format="json")
@@ -560,3 +562,168 @@ class AddStayTests(APITestCase):
         r = self.client.post(f"/api/stays/{w['id']}/extend/", {"periods": 1}, format="json")
         self.assertEqual((r.data["periods"], r.data["num_days"], r.data["total_amount"]), (2, 14, "600.00"))
         self.assertEqual(self.client.post(f"/api/stays/{w['id']}/extend/", {"periods": 0}, format="json").status_code, 400)
+
+
+class PaginationAndHistoryTests(APITestCase):
+    def setUp(self):
+        seed()
+        r = self.client.post("/api/auth/login/", {"username": "clerk", "password": "clerk123"}, format="json")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+        self.today = timezone.localdate()
+
+    def test_pages(self):
+        room = next(x for x in self.client.get("/api/rooms/board/").data if not x["occupied"])
+        for i in range(8):
+            self.client.post("/api/stays/", {"room": room["id"], "check_in_date": str(self.today - datetime.timedelta(days=20 + 2 * i)),
+                "check_in_time": "14:00", "check_out_date": str(self.today - datetime.timedelta(days=19 + 2 * i)), "check_out_time": "11:00",
+                "num_guests": 1, "rate": "50", "name": f"Old {i}", "cash": "10" if i % 2 else "50", "allow_overlap": True}, format="json")
+        total = len(self.client.get("/api/stays/").data)
+        r = self.client.get("/api/stays/?page=1&page_size=5").data
+        self.assertEqual((r["count"], r["page"], len(r["results"])), (total, 1, min(5, total)))
+        self.assertEqual(r["pages"], (total + 4) // 5)
+        last = self.client.get(f"/api/stays/?page=999&page_size=5").data
+        self.assertEqual(last["page"], r["pages"])
+        if r["pages"] > 1:
+            ids = [x["id"] for x in r["results"]] + [x["id"] for x in self.client.get("/api/stays/?page=2&page_size=5").data["results"]]
+            self.assertEqual(len(ids), len(set(ids)))  # no repeats across pages
+        self.assertGreater(total, 5)
+        b = self.client.get("/api/stays/?page=1&page_size=5&has_balance=1").data
+        self.assertTrue(all(float(x["balance"]) > 0 for x in b["results"]))
+        self.assertAlmostEqual(float(b["owed"]), sum(float(x["balance"]) for x in self.client.get("/api/stays/?has_balance=1").data), places=2)
+
+    def test_payment_history(self):
+        room = next(x for x in self.client.get("/api/rooms/board/").data if not x["occupied"])
+        s = self.client.post("/api/stays/", {"room": room["id"], "check_in_date": str(self.today), "check_in_time": "14:00",
+            "check_out_date": str(self.today + datetime.timedelta(days=2)), "check_out_time": "11:00", "num_guests": 1,
+            "rate": "50", "name": "History Harry", "phone": "555-1212", "cash": "30"}, format="json").data
+        self.client.post(f"/api/stays/{s['id']}/payments/", {"cash": "0", "credit": "70"}, format="json")
+        self.assertEqual(self.client.get("/api/reports/payment-history/").status_code, 400)
+        r = self.client.get("/api/reports/payment-history/?name=harry").data
+        self.assertEqual(r["count"], 1)
+        row = r["rows"][0]
+        self.assertEqual((row["guest"]["phone"], row["paid"], row["balance"], len(row["payments"])), ("555-1212", "100.00", "0.00", 2))
+        self.assertEqual([x["type"] for x in row["payments"]], ["Check-in", "Balance payment"])
+        r = self.client.get(f"/api/reports/payment-history/?room={room['number']}&start={self.today}&end={self.today}").data
+        self.assertTrue(any(x["id"] == s["id"] for x in r["rows"]))
+        r = self.client.get(f"/api/reports/payment-history/?room={room['number']}&start={self.today + datetime.timedelta(days=5)}").data
+        self.assertFalse(any(x["id"] == s["id"] for x in r["rows"]))
+
+
+class NamePartsTests(APITestCase):
+    def test_first_middle_last(self):
+        seed()
+        r = self.client.post("/api/auth/login/", {"username": "clerk", "password": "clerk123"}, format="json")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+        today = timezone.localdate()
+        room = next(x for x in self.client.get("/api/rooms/board/").data if not x["occupied"])
+        base = {"room": room["id"], "check_in_date": str(today), "check_in_time": "14:00",
+                "check_out_date": str(today + datetime.timedelta(days=1)), "check_out_time": "11:00", "num_guests": 1, "rate": "50"}
+        r = self.client.post("/api/stays/", {**base, "first_name": " Mary ", "middle_name": "Ann", "last_name": "Smith"}, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        g = r.data["guest"]
+        self.assertEqual((g["name"], g["first_name"], g["middle_name"], g["last_name"]), ("Mary Ann Smith", "Mary", "Ann", "Smith"))
+        # no name at all -> refused
+        r = self.client.post("/api/stays/", {**base, "first_name": "", "last_name": "", "allow_overlap": True}, format="json")
+        self.assertEqual(r.status_code, 400)
+        # old style full name still works and is split
+        r = self.client.post("/api/stays/", {**base, "name": "John Q  Public", "allow_overlap": True}, format="json")
+        g = r.data["guest"]
+        self.assertEqual((g["name"], g["first_name"], g["middle_name"], g["last_name"]), ("John Q Public", "John", "Q", "Public"))
+        # editing the stay with new parts updates the guest name
+        r = self.client.patch(f"/api/stays/{r.data['id']}/", {"first_name": "Jon", "middle_name": "", "last_name": "Public", "allow_overlap": True}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(self.client.get(f"/api/stays/{r.data['id']}/").data["guest"]["name"], "Jon Public")
+        # DNR list uses the same parts
+        r = self.client.post("/api/guests/", {"first_name": "Bad", "last_name": "Actor", "phone": "555-9999",
+                                              "do_not_rent": True, "dnr_reason": "damage"}, format="json")
+        self.assertEqual((r.status_code, r.data["name"]), (201, "Bad Actor"))
+        r = self.client.patch(f"/api/guests/{r.data['id']}/", {"middle_name": "X"}, format="json")
+        self.assertEqual(r.data["name"], "Bad X Actor")
+        self.assertEqual(self.client.post("/api/guests/", {"first_name": "", "do_not_rent": True}, format="json").status_code, 400)
+
+
+class ExpenseTests(APITestCase):
+    def test_expenses_in_cash_drawer(self):
+        seed()
+        def login(u, p):
+            r = self.client.post("/api/auth/login/", {"username": u, "password": p}, format="json")
+            self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+        login("clerk", "clerk123")
+        today = timezone.localdate()
+        before = self.client.get(f"/api/reports/today/?date={today}").data["money"]
+        r = self.client.post("/api/expenses/", {"amount": "25.50", "method": "CASH", "description": "Bleach and towels"}, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual((r.data["business_date"], r.data["clerk_name"] != "", r.data["can_edit"]), (str(today), True, True))
+        self.client.post("/api/expenses/", {"amount": "40", "method": "CREDIT", "description": "Plumber"}, format="json")
+        # validation
+        self.assertEqual(self.client.post("/api/expenses/", {"amount": "0", "method": "CASH", "description": "x"}, format="json").status_code, 400)
+        self.assertEqual(self.client.post("/api/expenses/", {"amount": "5", "method": "CASH", "description": " "}, format="json").status_code, 400)
+        future = str(today + datetime.timedelta(days=3))
+        self.assertEqual(self.client.post("/api/expenses/", {"amount": "5", "method": "CASH", "description": "x", "business_date": future}, format="json").status_code, 400)
+        m = self.client.get(f"/api/reports/today/?date={today}").data
+        self.assertEqual((m["money"]["expenses_cash"], m["money"]["expenses_card"], m["money"]["expenses"]), ("25.50", "40.00", "65.50"))
+        self.assertAlmostEqual(float(m["money"]["cash_in_drawer"]), float(before["cash"]) - 25.5, places=2)
+        self.assertEqual(len(m["expenses"]), 2)
+        # an older expense: clerk cannot change it, admin can; delete keeps the record
+        two_ago = str(today - datetime.timedelta(days=2))
+        self.assertEqual(self.client.post("/api/expenses/", {"amount": "9", "method": "CASH", "description": "Old", "business_date": two_ago}, format="json").status_code, 400)
+        login("owner", "owner123")
+        old = self.client.post("/api/expenses/", {"amount": "9", "method": "CASH", "description": "Old", "business_date": two_ago}, format="json").data
+        login("clerk", "clerk123")
+        self.assertFalse(self.client.get(f"/api/expenses/?date={two_ago}").data[0]["can_edit"])
+        self.assertEqual(self.client.delete(f"/api/expenses/{old['id']}/").status_code, 403)
+        self.assertEqual(self.client.delete(f"/api/expenses/{r.data['id']}/").status_code, 204)
+        from motel.models import Expense
+        self.assertTrue(Expense.objects.get(pk=r.data["id"]).is_deleted)
+        login("owner", "owner123")
+        self.assertEqual(self.client.patch(f"/api/expenses/{old['id']}/", {"amount": "10"}, format="json").status_code, 200)
+        self.assertEqual(self.client.get(f"/api/reports/today/?date={today}").data["money"]["expenses"], "40.00")
+
+
+class DlNumberTests(APITestCase):
+    def test_dl_number(self):
+        seed()
+        r = self.client.post("/api/auth/login/", {"username": "clerk", "password": "clerk123"}, format="json")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+        # DNR list entry with only a DL number
+        g = self.client.post("/api/guests/", {"first_name": "Bad", "last_name": "Guy", "dl_number": "d123-456-789",
+                                              "do_not_rent": True, "dnr_reason": "damage"}, format="json")
+        self.assertEqual((g.status_code, g.data["dl_number"]), (201, "D123-456-789"))
+        # check-in DNR check by DL ignores spaces / dashes / case
+        r = self.client.get("/api/guests/dnr_check/", {"dl": "D 123456789"}).data
+        self.assertEqual((r["checked"], [m["id"] for m in r["matches"]], r["matches"][0]["matched_on"]), (["dl"], [g.data["id"]], ["DL"]))
+        self.assertEqual(self.client.get("/api/guests/dnr_check/", {"dl": "X999"}).data["matches"], [])
+        # returning-guest lookup and search
+        self.assertEqual([x["id"] for x in self.client.get("/api/guests/check/", {"dl": "d123456789"}).data], [g.data["id"]])
+        self.assertTrue(any(x["id"] == g.data["id"] for x in self.client.get("/api/guests/", {"q": "456-789"}).data))
+        # check-in with the same DL reuses the guest record (no duplicate)
+        today = timezone.localdate()
+        room = next(x for x in self.client.get("/api/rooms/board/").data if not x["occupied"])
+        s = self.client.post("/api/stays/", {"room": room["id"], "check_in_date": str(today), "check_in_time": "14:00",
+            "check_out_date": str(today + datetime.timedelta(days=1)), "check_out_time": "11:00", "num_guests": 1, "rate": "50",
+            "first_name": "Bad", "last_name": "Guy", "dl_number": "D123456789"}, format="json")
+        self.assertEqual((s.status_code, s.data["guest"]["id"]), (201, g.data["id"]))
+        self.assertEqual(self.client.get("/api/stays/", {"q": "D123"}).data[0]["id"], s.data["id"])
+        # adding the same DL to the DNR list again merges
+        r = self.client.post("/api/guests/", {"first_name": "B", "last_name": "G", "dl_number": "D123456789", "do_not_rent": True}, format="json")
+        self.assertTrue(r.data.get("merged"))
+
+
+class EarlyCheckinFeeTests(APITestCase):
+    def test_fee_in_total_and_kept_on_early_checkout(self):
+        seed()
+        r = self.client.post("/api/auth/login/", {"username": "owner", "password": "owner123"}, format="json")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+        self.assertEqual(self.client.patch("/api/settings/", {"early_checkin_fee": "15"}, format="json").data["early_checkin_fee"], "15.00")
+        today = timezone.localdate()
+        room = next(x for x in self.client.get("/api/rooms/board/").data if not x["occupied"])
+        s = self.client.post("/api/stays/", {"room": room["id"], "check_in_date": str(today - datetime.timedelta(days=1)), "check_in_time": "09:00",
+            "check_out_date": str(today + datetime.timedelta(days=2)), "check_out_time": "11:00", "num_guests": 1, "rate": "50",
+            "first_name": "Early", "last_name": "Bird", "early_checkin_fee": "15", "cash": "165"}, format="json").data
+        self.assertEqual((s["early_checkin_fee"], s["total_amount"], s["balance"]), ("15.00", "165.00", "0.00"))
+        self.assertEqual(self.client.post("/api/stays/", {"room": room["id"], "check_in_date": str(today), "check_in_time": "09:00",
+            "check_out_date": str(today + datetime.timedelta(days=1)), "check_out_time": "11:00", "num_guests": 1, "rate": "50",
+            "first_name": "Neg", "last_name": "Fee", "early_checkin_fee": "-1", "allow_overlap": True}, format="json").status_code, 400)
+        # leaving early: room charge drops, early check-in fee is kept (not refunded)
+        q = self.client.get(f"/api/stays/{s['id']}/early_quote/?date={today}").data
+        self.assertEqual((q["kept_charges"], q["new_total"], q["refund_due"]), ("15.00", "65.00", "100.00"))

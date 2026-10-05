@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import api, { errorText } from '../api'
 import { useAuth } from '../auth'
+import PaymentHistory from '../components/PaymentHistory'
 import { Alert, BalanceCell, Empty, PageHead, Stat } from '../components/ui'
 import { addDays, fmtDate, fmtDateTime, money, todayISO, rateTypeInfo } from '../utils'
 
@@ -10,6 +11,7 @@ const TABS = [
   { key: 'collections', label: 'Collections', range: true },
   { key: 'outstanding', label: 'Outstanding Balances', range: false },
   { key: 'occupancy', label: 'Occupancy', range: true },
+  { key: 'history', label: 'Payment History', range: false, own: true }, // own filters + Get report button
 ]
 
 function downloadCSV(name, header, rows) {
@@ -31,6 +33,8 @@ export default function Reports() {
   const [client, setClient] = useState('')
   const [result, setResult] = useState(null) // { tab, data }
   const [err, setErr] = useState('')
+  const historyCSV = useRef(null)
+  const [historyReady, setHistoryReady] = useState(false)
 
   useEffect(() => {
     if (isSuper) api.get('/clients/').then((r) => { setClients(r.data); if (r.data[0]) setClient(String(r.data[0].id)) })
@@ -38,6 +42,7 @@ export default function Reports() {
 
   useEffect(() => {
     if (isSuper && !client) return
+    if (TABS.find((t) => t.key === tab).own) return
     const params = { start, end }
     if (isSuper) params.client = client
     api.get(`/reports/${tab}/`, { params })
@@ -56,6 +61,7 @@ export default function Reports() {
   }
 
   function exportCSV() {
+    if (tab === 'history') { historyCSV.current?.(); return }
     if (!data) return
     if (tab === 'checkins') downloadCSV(`checkins_${start}_${end}`,
       ['Check-in', 'Room', 'Type', 'Guest', 'Guests', 'Days', 'Rate', 'Fees', 'Total', 'Cash (check-in day)', 'Credit (check-in day)', 'Paid later', 'Balance', 'Clerk'],
@@ -74,7 +80,7 @@ export default function Reports() {
   return (
     <>
       <PageHead title="Reports">
-        <button className="btn" onClick={exportCSV} disabled={!data}>Export CSV</button>
+        <button className="btn" onClick={exportCSV} disabled={tab === 'history' ? !historyReady : !data}>Export CSV</button>
         <button className="btn" onClick={() => window.print()}>Print</button>
       </PageHead>
 
@@ -84,7 +90,7 @@ export default function Reports() {
         ))}
       </div>
 
-      <div className="filters no-print">
+      {(!current.own || isSuper) && <div className="filters no-print">
         {isSuper && (
           <select value={client} onChange={(e) => setClient(e.target.value)}>
             {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
@@ -99,11 +105,14 @@ export default function Reports() {
             <button className="btn btn-sm" onClick={() => preset(30)}>30 days</button>
           </>
         )}
-      </div>
-      <div className="print-only print-title">
+      </div>}
+      {!current.own && <div className="print-only print-title">
         {current.label} {current.range && `· ${fmtDate(start)} to ${fmtDate(end)}`}
-      </div>
+      </div>}
       <Alert>{err}</Alert>
+      {tab === 'history' && (isSuper && !client ? null : (
+        <PaymentHistory isSuper={isSuper} client={client} onCSV={(fn) => { historyCSV.current = fn; setHistoryReady(true) }} />
+      ))}
 
       {data && tab === 'checkins' && (
         <>

@@ -2,7 +2,7 @@ import datetime
 from decimal import Decimal
 
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
@@ -16,10 +16,10 @@ from accounts.permissions import (
 )
 
 from . import business, early
-from .models import DayClose, Guest, Note, Payment, Room, RoomType, Stay
+from .models import DayClose, Expense, Guest, Note, Payment, Room, RoomType, Stay
 from .serializers import (
-    GuestSerializer, NoteSerializer, PaymentSerializer, RoomSerializer, RoomTypeSerializer,
-    StaySerializer, StayWriteSerializer,
+    ExpenseSerializer, GuestSerializer, NoteSerializer, PaymentSerializer, RoomSerializer, RoomTypeSerializer,
+    StaySerializer, StayWriteSerializer, expense_editable,
 )
 
 ZERO = Decimal("0.00")
@@ -159,7 +159,7 @@ def _plate(s):
     return "".join(ch for ch in (s or "") if ch.isalnum()).upper()
 
 
-def find_dnr(client, name="", phone="", plate=""):
+def find_dnr(client, name="", phone="", plate="", dl=""):
     """
     Do Not Rent guests matching any of name / phone / plate.
     Phone compares digits only (806-555-0111 = (806) 555 0111), plate ignores spaces and dashes,
@@ -169,6 +169,7 @@ def find_dnr(client, name="", phone="", plate=""):
     name = (name or "").strip().lower()
     phone_d = _digits(phone)
     plate_n = _plate(plate)
+    dl_n = _plate(dl)
     out = []
     for g in Guest.objects.filter(client=client, do_not_rent=True).select_related("dnr_marked_by"):
         why = []
@@ -178,6 +179,8 @@ def find_dnr(client, name="", phone="", plate=""):
             why.append("phone")
         if plate_n and len(plate_n) >= 3 and _plate(g.license_plate) == plate_n:
             why.append("plate")
+        if dl_n and len(dl_n) >= 4 and _plate(g.dl_number) == dl_n:
+            why.append("DL")
         if name and len(name) >= 3 and " ".join(g.name.lower().split()) == " ".join(name.split()):
             why.append("name")
         if why:
@@ -198,7 +201,8 @@ class GuestViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.Crea
         qs = Guest.objects.filter(client=self.request.user.client)
         q = self.request.query_params.get("q")
         if q:
-            qs = qs.filter(Q(name__icontains=q) | Q(phone__icontains=q) | Q(license_plate__icontains=q))
+            qs = qs.filter(Q(name__icontains=q) | Q(phone__icontains=q) | Q(license_plate__icontains=q)
+                           | Q(dl_number__icontains=q))
         if self.request.query_params.get("dnr") == "1":
             qs = qs.filter(do_not_rent=True)
         return qs[:200] if self.action == "list" else qs
@@ -212,6 +216,9 @@ class GuestViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.Crea
         if data.get("phone") and len(_digits(data["phone"])) >= 7:
             existing = next((g for g in Guest.objects.filter(client=client)
                              if _digits(g.phone) and _digits(g.phone)[-10:] == _digits(data["phone"])[-10:]), None)
+        if existing is None and _plate(data.get("dl_number")):
+            existing = next((g for g in Guest.objects.filter(client=client).exclude(dl_number="")
+                             if _plate(g.dl_number) == _plate(data["dl_number"])), None)
         if existing is None and data.get("license_plate"):
             existing = next((g for g in Guest.objects.filter(client=client)
                              if _plate(g.license_plate) == _plate(data["license_plate"])), None)
@@ -237,10 +244,10 @@ class GuestViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.Crea
 
     @action(detail=False, methods=["get"])
     def dnr_check(self, request):
-        """Check-in form "Check DNR" button: is this name / phone / plate on the Do Not Rent list?"""
+        """Check-in form "Check DNR" button: is this name / phone / plate / DL number on the Do Not Rent list?"""
         p = request.query_params
-        hits = find_dnr(request.user.client, p.get("name"), p.get("phone"), p.get("plate"))
-        checked = [k for k in ("name", "phone", "plate") if (p.get(k) or "").strip()]
+        hits = find_dnr(request.user.client, p.get("name"), p.get("phone"), p.get("plate"), p.get("dl"))
+        checked = [k for k in ("name", "phone", "plate", "dl") if (p.get(k) or "").strip()]
         return Response({
             "checked": checked,
             "matches": [{**GuestSerializer(g).data, "matched_on": why} for g, why in hits],
@@ -256,7 +263,11 @@ class GuestViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.Crea
         phone = (request.query_params.get("phone") or "").strip()
         plate = (request.query_params.get("plate") or "").strip()
         name = (request.query_params.get("name") or "").strip()
+        dl = (request.query_params.get("dl") or "").strip()
         cond = Q()
+        if dl and len(_plate(dl)) >= 4:
+            ids = [g.id for g in Guest.objects.filter(client=client).exclude(dl_number="") if _plate(g.dl_number) == _plate(dl)]
+            cond |= Q(id__in=ids)
         if phone:
             cond |= Q(phone=phone)
         if plate:
@@ -311,15 +322,44 @@ class StayViewSet(viewsets.ModelViewSet):
             q = p["q"]
             qs = qs.filter(
                 Q(guest__name__icontains=q) | Q(guest__phone__icontains=q)
-                | Q(guest__license_plate__icontains=q) | Q(room__number__iexact=q)
+                | Q(guest__license_plate__icontains=q) | Q(guest__dl_number__icontains=q) | Q(room__number__iexact=q)
             )
         return qs
 
     def list(self, request, *args, **kwargs):
-        stays = list(self.get_queryset()[:500])
-        if request.query_params.get("has_balance") == "1":
-            stays = [s for s in stays if s.total_amount - paid(s) > 0]
-        return Response(StaySerializer(stays, many=True).data)
+        """
+        ?page=N&page_size=25 returns one page: {count, page, page_size, pages, results, owed}.
+        Without page: old behaviour (plain list, max 500) for screens that need a short list.
+        """
+        p = request.query_params
+        qs = self.get_queryset().order_by("-check_in_date", "-check_in_time", "-id")
+        if p.get("has_balance") == "1":
+            # balance = total - payments; worked out in the database so only one page is loaded
+            from django.db.models import DecimalField, OuterRef, Subquery, Sum, Value
+            from django.db.models.functions import Coalesce
+            paid_sq = (Payment.objects.filter(stay=OuterRef("pk")).values("stay")
+                       .annotate(t=Sum("amount")).values("t"))
+            qs = qs.annotate(paid_sum=Coalesce(Subquery(paid_sq, output_field=DecimalField(max_digits=12, decimal_places=2)),
+                                               Value(ZERO), output_field=DecimalField(max_digits=12, decimal_places=2)))
+            qs = qs.filter(total_amount__gt=F("paid_sum"))
+        if not p.get("page"):
+            return Response(StaySerializer(list(qs[:500]), many=True).data)
+        try:
+            size = min(max(int(p.get("page_size") or 25), 5), 200)
+            page = max(int(p.get("page") or 1), 1)
+        except ValueError:
+            raise ValidationError({"page": "Use a number."})
+        count = qs.count()
+        pages = max((count + size - 1) // size, 1)
+        page = min(page, pages)
+        rows = list(qs[(page - 1) * size: page * size])
+        data = {"count": count, "page": page, "page_size": size, "pages": pages,
+                "results": StaySerializer(rows, many=True).data}
+        if p.get("has_balance") == "1":
+            from django.db.models import Sum as _Sum
+            agg = qs.aggregate(t=_Sum("total_amount"), pd=_Sum("paid_sum"))
+            data["owed"] = str((agg["t"] or ZERO) - (agg["pd"] or ZERO))
+        return Response(data)
 
     def destroy(self, request, *args, **kwargs):
         if request.user.role != User.CLIENT_ADMIN:
@@ -863,6 +903,14 @@ def report_today(request):
     from_checkins = sum((p.amount for p in pays if p.stay.check_in_date == day), ZERO)
     refunds = sum((-p.amount for p in pays if p.kind == Payment.REFUND), ZERO)
 
+    # expenses paid out on this business day (cash ones come out of the drawer)
+    exps = list(Expense.objects.filter(client=client, business_date=day, is_deleted=False)
+                .select_related("clerk", "client").order_by("created_at"))
+    if mine:
+        exps = [e for e in exps if e.clerk_id == request.user.id]
+    exp_cash = sum((e.amount for e in exps if e.method == Expense.CASH), ZERO)
+    exp_card = sum((e.amount for e in exps if e.method == Expense.CREDIT), ZERO)
+
     by_clerk = {}
     for p in pays:
         row = by_clerk.setdefault(clerk_name(p.clerk) or "Unknown", {"cash": ZERO, "credit": ZERO, "count": 0})
@@ -910,6 +958,11 @@ def report_today(request):
             "collected": str(cash + credit),
             "refunds": str(refunds),
             "received": str(cash + credit + refunds),
+            "expenses_cash": str(exp_cash),
+            "expenses_card": str(exp_card),
+            "expenses": str(exp_cash + exp_card),
+            "cash_in_drawer": str(cash - exp_cash),
+            "net": str(cash + credit - exp_cash - exp_card),
             "from_todays_checkins": str(from_checkins),
             "from_earlier_stays": str(cash + credit - from_checkins),
             "unpaid_from_todays_checkins": str(owed),
@@ -925,6 +978,7 @@ def report_today(request):
             "check_in_date": s.check_in_date, "total": str(s.total_amount),
             "balance": str(s.total_amount - paid(s)), "status": s.status,
         } for s in checkouts],
+        "expenses": ExpenseSerializer(exps, many=True, context={"request": request}).data,
         "payments": [{
             "id": p.id, "paid_at": p.paid_at, "business_date": p.business_date, "method": p.method, "amount": str(p.amount),
             "type": pay_type(p),
@@ -935,6 +989,42 @@ def report_today(request):
 
 
 # ------------------------------------------------------------------ maintenance
+class ExpenseViewSet(viewsets.ModelViewSet):
+    """
+    Expenses paid by the front desk (shown in Today's Report > Cash drawer).
+    ?date=YYYY-MM-DD filters by business day. Delete keeps the record (is_deleted).
+    """
+
+    permission_classes = [IsClientStaff]
+    serializer_class = ExpenseSerializer
+
+    def get_queryset(self):
+        qs = Expense.objects.filter(client=self.request.user.client, is_deleted=False).select_related("clerk", "client")
+        if self.request.query_params.get("date"):
+            qs = qs.filter(business_date=parse_date(self.request.query_params["date"]))
+        return qs
+
+    def perform_create(self, serializer):
+        client = self.request.user.client
+        day = serializer.validated_data.get("business_date") or business.business_date(client)
+        serializer.save(client=client, clerk=self.request.user, business_date=day)
+
+    def _check(self, exp):
+        if not expense_editable(exp, self.request.user):
+            raise PermissionDenied("You can only change your own expenses on the current business day. Ask the admin.")
+
+    def perform_update(self, serializer):
+        self._check(serializer.instance)
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        self._check(instance)
+        instance.is_deleted = True
+        instance.deleted_at = timezone.now()
+        instance.deleted_by = self.request.user
+        instance.save()
+
+
 class NoteViewSet(viewsets.ModelViewSet):
     """
     Maintenance notes, written by front desk staff (client admin / client user).
@@ -1138,3 +1228,68 @@ def business_day_reopen(request):
 def business_day_history(request):
     closes = DayClose.objects.filter(client=request.user.client).select_related("closed_by")[:60]
     return Response([_close_row(c) for c in closes])
+
+
+# ------------------------------------------------------------------ payment history report
+@api_view(["GET"])
+@permission_classes([IsClientStaffOrSuperAdmin])
+def report_payment_history(request):
+    """
+    Payment history for guests: filter by room number, date range (stays on those dates) and / or guest name.
+    Returns each stay with the guest's details and every payment and refund, oldest first.
+    """
+    client = get_request_client(request)
+    p = request.query_params
+    room, name = (p.get("room") or "").strip(), (p.get("name") or "").strip()
+    start = parse_date(p.get("start"), None, "start") if p.get("start") else None
+    end = parse_date(p.get("end"), None, "end") if p.get("end") else None
+    if not (room or name or start or end):
+        raise ValidationError({"detail": "Pick a room, a date or a guest name."})
+    if start and end and end < start:
+        raise ValidationError({"end": "End date is before start date."})
+    qs = stay_qs(client).filter(is_deleted=False)
+    if room:
+        qs = qs.filter(room__number__iexact=room)
+    if name:
+        qs = qs.filter(guest__name__icontains=name)
+    if start:
+        qs = qs.filter(check_out_date__gte=start)
+    if end:
+        qs = qs.filter(check_in_date__lte=end)
+    stays = list(qs.order_by("-check_in_date", "-id")[:201])
+    more = len(stays) > 200
+    stays = stays[:200]
+
+    def clerk(u):
+        return (u.get_full_name() or u.username) if u else ""
+
+    rows, totals = [], {"total": ZERO, "cash": ZERO, "credit": ZERO, "refunds": ZERO, "paid": ZERO, "balance": ZERO}
+    for s in stays:
+        pays = sorted(s.payments.all(), key=lambda x: x.paid_at)
+        cash = sum((x.amount for x in pays if x.method == Payment.CASH), ZERO)
+        credit = sum((x.amount for x in pays if x.method == Payment.CREDIT), ZERO)
+        refunds = sum((-x.amount for x in pays if x.kind == Payment.REFUND), ZERO)
+        bal = s.total_amount - cash - credit
+        g = s.guest
+        rows.append({
+            "id": s.id, "status": s.status,
+            "guest": {"name": g.name, "phone": g.phone, "address": ", ".join(x for x in (g.address, g.city, g.state, g.zip_code) if x),
+                      "car": g.car, "license_plate": g.license_plate, "dl_number": g.dl_number, "do_not_rent": g.do_not_rent},
+            "room_number": s.room.number, "room_type": s.room.room_type.name,
+            "check_in_date": s.check_in_date, "check_out_date": s.check_out_date, "num_days": s.num_days,
+            "rate": str(s.rate), "rate_type": s.rate_type, "num_guests": s.num_guests,
+            "room_charge": str(s.room_charge), "fees": str(s.charges_total), "adjustment": str(s.adjustment),
+            "total": str(s.total_amount), "cash": str(cash), "credit": str(credit), "refunds": str(refunds),
+            "paid": str(cash + credit), "balance": str(bal),
+            "payments": [{
+                "id": x.id, "business_date": x.business_date, "paid_at": x.paid_at, "type": pay_type(x),
+                "method": x.method, "amount": str(x.amount), "clerk": clerk(x.clerk), "notes": x.notes,
+            } for x in pays],
+        })
+        totals["total"] += s.total_amount
+        totals["cash"] += cash
+        totals["credit"] += credit
+        totals["refunds"] += refunds
+        totals["paid"] += cash + credit
+        totals["balance"] += bal
+    return Response({"count": len(rows), "more": more, "rows": rows, "totals": {k: str(v) for k, v in totals.items()}})

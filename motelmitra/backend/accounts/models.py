@@ -25,6 +25,7 @@ class Client(models.Model):
                                            help_text="Per extra person, per night")
     included_guests = models.PositiveSmallIntegerField(default=2, help_text="Guests included in the room rate")
     late_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0, help_text="Late checkout fee")
+    early_checkin_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0, help_text="Early check-in fee")
     # Business day: changes automatically at this time, or earlier when the front desk runs Night Audit.
     day_change_time = models.TimeField(default=datetime.time(11, 0),
                                        help_text="Business day changes automatically at this time")
