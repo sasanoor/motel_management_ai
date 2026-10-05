@@ -73,7 +73,7 @@ def quote(stay, depart, method=DAILY_RATE, custom_room_charge=None):
         room = options[method]
 
     extra = q(orig["extra_person_fee"]) if method == NO_REFUND else q(orig["extra_person_fee"] * used / booked)
-    fixed = sum((Decimal(x or 0) for x in (stay.pet_fee, stay.card_fee, stay.late_fee, stay.early_checkin_fee)), ZERO)
+    fixed = sum((Decimal(x or 0) for x in (stay.pet_fee, stay.card_fee, stay.late_fee, stay.early_checkin_fee, stay.damage_fee)), ZERO)
     new_total = q(room + extra + fixed + Decimal(stay.adjustment or 0))
     paid = q(net_paid(stay))
     refund_due = max(paid - new_total, ZERO)

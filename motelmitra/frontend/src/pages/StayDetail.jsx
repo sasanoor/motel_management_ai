@@ -4,6 +4,7 @@ import api, { errorText } from '../api'
 import { useAuth } from '../auth'
 import AddStayModal from '../components/AddStayModal'
 import CheckoutModal from '../components/CheckoutModal'
+import { PhotoGallery } from '../components/Photos'
 import { Alert, BalanceCell, PageHead, PaymentModal, RefundModal, StatusPill } from '../components/ui'
 import { fmtDate, fmtDateTime, fmtTime, money, num, periodText, rateTypeInfo } from '../utils'
 
@@ -22,9 +23,16 @@ export default function StayDetail() {
   const [refunding, setRefunding] = useState(false)
   const [adding, setAdding] = useState(false)
 
+  const [photos, setPhotos] = useState([])
   const load = useCallback(() => {
     api.get(`/stays/${id}/`).then((r) => setS(r.data)).catch((e) => setErr(errorText(e)))
+    api.get('/photos/', { params: { stay: id } }).then((r) => setPhotos(r.data)).catch(() => {})
   }, [id])
+
+  async function deletePhoto(p) {
+    if (!window.confirm(`Delete this ${p.kind_label} photo?`)) return
+    try { await api.delete(`/photos/${p.id}/`); setPhotos((l) => l.filter((x) => x.id !== p.id)) } catch (e) { setErr(errorText(e)) }
+  }
   useEffect(() => { load() }, [load])
 
   async function act(path, confirmText, body = {}) {
@@ -120,6 +128,11 @@ export default function StayDetail() {
           <Row k="Do not rent" v={g.do_not_rent ? 'Yes' : 'No'} />
         </section>
       </div>
+
+      <section className="card">
+        <h2>Photos <span className="tiny muted">· DL photos: Edit to replace · damage photos: added at checkout</span></h2>
+        <PhotoGallery photos={photos} onDelete={deletePhoto} />
+      </section>
 
       <section className="card">
         <h2>Payments</h2>

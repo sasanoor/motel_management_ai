@@ -92,4 +92,4 @@ def motel_settings(request):
 @permission_classes([AllowAny])
 def version(request):
     """Running server version; start_app.bat and the screens use it to spot an old server after an update."""
-    return Response({"version": settings.APP_VERSION})
+    return Response({"version": settings.APP_VERSION, "wifi": settings.HOST_ON_WIFI})

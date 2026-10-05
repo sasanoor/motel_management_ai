@@ -17,6 +17,7 @@ router.register("guests", mv.GuestViewSet, basename="guest")
 router.register("stays", mv.StayViewSet, basename="stay")
 router.register("notes", mv.NoteViewSet, basename="note")
 router.register("expenses", mv.ExpenseViewSet, basename="expense")
+router.register("photos", mv.PhotoViewSet, basename="photo")
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -27,6 +28,14 @@ urlpatterns = [
     path("api/settings/", motel_settings),
     path("api/dashboard/", mv.dashboard),
     path("api/business-day/", mv.business_day),
+    path("api/photo-sessions/", mv.photo_session_create),
+    path("api/photo-sessions/<str:token>/", mv.photo_session_status),
+    path("api/scanner/test/", mv.scanner_test),
+    path("api/scanner/scan/", mv.scanner_scan),
+    path("api/scanner/folder/", mv.scanner_folder),
+    path("api/scanner/folder/file/", mv.scanner_folder_file),
+    path("api/phone/<str:token>/", mv.phone_info),
+    path("api/phone/<str:token>/upload/", mv.phone_upload),
     path("api/business-day/preview/", mv.business_day_preview),
     path("api/business-day/close/", mv.business_day_close),
     path("api/business-day/reopen/", mv.business_day_reopen),

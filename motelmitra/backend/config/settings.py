@@ -18,6 +18,9 @@ from dotenv import dotenv_values  # noqa: E402
 APP_VERSION = (dotenv_values(BASE_DIR.parent / ".env").get("APP_VERSION") or "dev").strip()
 load_dotenv(BASE_DIR / ".env")
 
+# HOST_ON_WIFI=yes / no (backend/.env): start_app serves on the WiFi or on this PC only.
+HOST_ON_WIFI = os.getenv("HOST_ON_WIFI", "yes").strip().lower() not in ("no", "n", "false", "0", "off")
+
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-only-insecure-key-change-me-in-production-0123456789")
 DEBUG = os.getenv("DEBUG", "True") == "True"
 ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")

@@ -9,6 +9,11 @@ export const ROLES = {
 let businessDate = null
 export function setBusinessDate(iso) { businessDate = iso || null }
 
+// HOST_ON_WIFI from the server (false = this PC only, so phones cannot reach MotelMitra)
+let wifiHosted = true
+export function setWifiHosted(v) { wifiHosted = v !== false }
+export const isWifiHosted = () => wifiHosted
+
 export function calendarToday() {
   const d = new Date()
   return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10)

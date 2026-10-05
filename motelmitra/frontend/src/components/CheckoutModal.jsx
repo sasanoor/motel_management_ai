@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import api, { errorText } from '../api'
 import { addDays, calendarToday, fmtDate, fmtTime, money, nowTime, num, todayISO } from '../utils'
+import { PhotoUploader } from './Photos'
 import { Alert, Modal } from './ui'
 
 const METHODS = [
@@ -39,6 +40,13 @@ export default function CheckoutModal({ stay, onClose, onDone }) {
   const [refund, setRefund] = useState(null)       // null = full refund due
   const [refundMethod, setRefundMethod] = useState(num(stay.credit_paid) > num(stay.cash_paid) ? 'CREDIT' : 'CASH') // back the way most was paid
   const [notes, setNotes] = useState('')
+  // room condition: damage photos (saved straight to the stay), notes, fee, DNR
+  const [damagePhotos, setDamagePhotos] = useState([])
+  const [damageNotes, setDamageNotes] = useState('')
+  const [damageFee, setDamageFee] = useState('')
+  const [addDnr, setAddDnr] = useState(false)
+  const damageValue = Math.max(num(damageFee), 0)
+  const damageBody = { damage_fee: damageValue.toFixed(2), damage_notes: damageNotes, add_dnr: addDnr }
 
   useEffect(() => { api.get('/settings/').then((r) => setFees(r.data)).catch(() => {}) }, [])
 
@@ -46,12 +54,12 @@ export default function CheckoutModal({ stay, onClose, onDone }) {
     if (!early) return
     if (method === 'CUSTOM' && custom === '') return
     let live = true
-    const params = { date, method, ...(method === 'CUSTOM' ? { room_charge: custom } : {}) }
+    const params = { date, method, ...(method === 'CUSTOM' ? { room_charge: custom } : {}), damage_fee: damageValue || undefined }
     api.get(`/stays/${stay.id}/early_quote/`, { params })
       .then((r) => { if (live) { setQuote(r.data); setQErr('') } })
       .catch((e) => { if (live) { setQuote(null); setQErr(errorText(e)) } })
     return () => { live = false }
-  }, [early, stay.id, date, method, custom])
+  }, [early, stay.id, date, method, custom, damageValue])
 
   const owes = num(stay.balance) > 0
   const hadLateFee = num(stay.late_fee) > 0
@@ -64,7 +72,7 @@ export default function CheckoutModal({ stay, onClose, onDone }) {
   async function checkOut() {
     setBusy(true); setErr('')
     try {
-      await api.post(`/stays/${stay.id}/checkout/`, lateOn && lateValue > 0 ? { late_fee: lateValue.toFixed(2) } : {})
+      await api.post(`/stays/${stay.id}/checkout/`, { ...(lateOn && lateValue > 0 ? { late_fee: lateValue.toFixed(2) } : {}), ...damageBody })
       onDone?.()
       onClose()
     } catch (e) {
@@ -78,7 +86,7 @@ export default function CheckoutModal({ stay, onClose, onDone }) {
     try {
       await api.post(`/stays/${stay.id}/early_checkout/`, {
         date, method, ...(method === 'CUSTOM' ? { room_charge: custom } : {}),
-        refund_amount: refundValue.toFixed(2), refund_method: refundMethod, notes,
+        refund_amount: refundValue.toFixed(2), refund_method: refundMethod, notes, ...damageBody,
       })
       onDone?.()
       onClose()
@@ -91,7 +99,7 @@ export default function CheckoutModal({ stay, onClose, onDone }) {
   const methods = METHODS.filter((m) => !(m.notDaily && stay.rate_type === 'DAILY'))
 
   return (
-    <Modal title={`${early ? 'Early checkout' : 'Check out'}: ${stay.guest.name}`} onClose={onClose} width={early ? 640 : 520}>
+    <Modal title={`${early ? 'Early checkout' : 'Check out'}: ${stay.guest.name}`} onClose={onClose} width={640}>
       <div className="co-sum">
         <div><span>Room</span><strong>{stay.room_number}</strong></div>
         <div><span>Booked</span><strong>{fmtDate(stay.check_in_date)} → {fmtDate(stay.check_out_date)}</strong></div>
@@ -144,7 +152,7 @@ export default function CheckoutModal({ stay, onClose, onDone }) {
               <tbody>
                 <tr><td>Room charge</td><td className="num">{money(quote.room_charge)}</td><td className="tiny muted">was {money(quote.original_room_charge)}</td></tr>
                 {num(stay.extra_person_fee) > 0 && <tr><td>Extra person fee</td><td className="num">{money(quote.extra_person_fee)}</td><td className="tiny muted">{quote.method === 'NO_REFUND' ? 'kept' : `was ${money(stay.extra_person_fee)}, nights used only`}</td></tr>}
-                {num(quote.kept_charges) > 0 && <tr><td>Pet, card, late and early check-in fees</td><td className="num">{money(quote.kept_charges)}</td><td className="tiny muted">not refunded</td></tr>}
+                {num(quote.kept_charges) > 0 && <tr><td>Fees (pet, card, late, early check-in, damage)</td><td className="num">{money(quote.kept_charges)}</td><td className="tiny muted">not refunded</td></tr>}
                 {num(quote.adjustment) !== 0 && <tr><td>{num(quote.adjustment) < 0 ? 'Discount' : 'Adjustment'}</td><td className="num">{money(quote.adjustment)}</td><td className="tiny muted">kept</td></tr>}
                 <tr className="em-total"><td>New total</td><td className="num">{money(quote.new_total)}</td><td className="tiny muted">was {money(quote.original_total)}</td></tr>
                 <tr><td>Paid</td><td className="num">{money(quote.paid)}</td><td></td></tr>
@@ -195,6 +203,26 @@ export default function CheckoutModal({ stay, onClose, onDone }) {
           )}
         </>
       )}
+
+      <div className="room-condition">
+        <h4>Room condition</h4>
+        <PhotoUploader mode="DAMAGE" value={damagePhotos} stay={stay.id}
+          onAdd={(ph) => setDamagePhotos((l) => (l.some((x) => x.id === ph.id) ? l : [...l, ph]))}
+          onRemove={(ph) => { api.delete(`/photos/${ph.id}/`).catch(() => {}); setDamagePhotos((l) => l.filter((x) => x.id !== ph.id)) }} />
+        <div className="form-grid cols-2 damage-grid">
+          <label className="span-2">Damage notes
+            <input value={damageNotes} onChange={(e) => setDamageNotes(e.target.value)} maxLength={500} placeholder="Leave empty if the room is fine" />
+          </label>
+          <label>Damage fee
+            <input type="number" step="0.01" min="0" value={damageFee} onChange={(e) => setDamageFee(e.target.value)} placeholder="0.00" />
+            <span className="hint">Added to the guest's bill{early ? '; reduces the refund' : ''}</span>
+          </label>
+          <label className="check dnr-check-box">
+            <input type="checkbox" checked={addDnr} onChange={(e) => setAddDnr(e.target.checked)} />
+            <span>Also add guest to the <strong>DNR list</strong></span>
+          </label>
+        </div>
+      </div>
 
       <Alert>{err}</Alert>
       <div className="co-actions">

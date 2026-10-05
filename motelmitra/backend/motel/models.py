@@ -157,6 +157,7 @@ class Stay(models.Model):
     card_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     late_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     early_checkin_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    damage_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     # early checkout: room charge for the nights actually used, and the booking as it was before
     room_charge_override = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     early_snapshot = models.JSONField(null=True, blank=True)
@@ -215,7 +216,7 @@ class Stay(models.Model):
     def charges_total(self):
         """Pets + extra persons + card fee + late fee."""
         return sum((Decimal(x or 0) for x in (self.pet_fee, self.extra_person_fee, self.card_fee, self.late_fee,
-                                                self.early_checkin_fee)),
+                                                self.early_checkin_fee, self.damage_fee)),
                    Decimal("0"))
 
     @property
@@ -333,3 +334,146 @@ class Expense(models.Model):
 
     def __str__(self):
         return f"{self.business_date} {self.method} {self.amount} {self.description}"
+
+
+# ------------------------------------------------------------------ photos (DL and room damage)
+class PhotoSession(models.Model):
+    """
+    "Use phone" QR code: lets a phone on the motel WiFi send photos to one check-in / checkout
+    without logging in. The token works for 10 minutes.
+    """
+
+    token = models.CharField(max_length=40, unique=True)
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="photo_sessions")
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+")
+    kind = models.CharField(max_length=12)
+    stay = models.ForeignKey("Stay", null=True, blank=True, on_delete=models.CASCADE, related_name="+")
+    expires_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class Photo(models.Model):
+    """
+    DL photo (front / back) or room damage photo.
+    Stored privately under media/<check-in date>/Room-<number>/<YYYYMMDD-HHMM>_<room>_<KIND>_<n>.jpg
+    (DNR-only guests: media/DNR/..., not yet saved check-ins: media/pending/...).
+    """
+
+    DL_FRONT = "DL_FRONT"
+    DL_BACK = "DL_BACK"
+    DAMAGE = "DAMAGE"
+    KINDS = [(DL_FRONT, "DL front"), (DL_BACK, "DL back"), (DAMAGE, "Room damage")]
+
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="photos")
+    guest = models.ForeignKey(Guest, null=True, blank=True, on_delete=models.SET_NULL, related_name="photos")
+    stay = models.ForeignKey("Stay", null=True, blank=True, on_delete=models.SET_NULL, related_name="photos")
+    session = models.ForeignKey(PhotoSession, null=True, blank=True, on_delete=models.SET_NULL, related_name="photos")
+    kind = models.CharField(max_length=12, choices=KINDS)
+    file = models.FileField(max_length=255)
+    via = models.CharField(max_length=10, blank=True)  # PHONE / WEBCAM / FILE
+    uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                    related_name="photos")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+
+    def __str__(self):
+        return self.file.name
+
+
+def photo_target(photo):
+    """Folder and file name for a photo, from its stay (or DNR guest) and time taken."""
+    from django.utils import timezone as tz
+    when = tz.localtime(photo.created_at or tz.now())
+    stamp = when.strftime("%Y%m%d-%H%M")
+    if photo.stay_id:
+        st = photo.stay
+        folder = f"{st.check_in_date:%Y-%m-%d}/Room-{st.room.number}"
+        room = st.room.number
+    elif photo.guest_id:
+        folder, room = "DNR", "DNR"
+    else:
+        folder, room = "pending", "NEW"
+    label = "DL" if photo.kind in (Photo.DL_FRONT, Photo.DL_BACK) else "DAMAGE"
+    if photo.kind == Photo.DL_FRONT:
+        n = 1
+    elif photo.kind == Photo.DL_BACK:
+        n = 2
+    else:   # damage photos are numbered 1, 2, 3 ... within the stay
+        others = Photo.objects.filter(stay_id=photo.stay_id, kind=Photo.DAMAGE).exclude(pk=photo.pk) if photo.stay_id else []
+        n = 1 + sum(1 for o in others if o.created_at and photo.created_at and o.created_at <= photo.created_at)
+    safe_room = "".join(ch for ch in str(room) if ch.isalnum() or ch in "-_") or "X"
+    return f"{folder}/{stamp}_{safe_room}_{label}_{n}.jpg"
+
+
+def place_photo(photo):
+    """Move the file to where it belongs (after it is linked to a stay, or the room changes)."""
+    import os
+    from django.core.files.storage import default_storage
+    target = photo_target(photo)
+    if photo.file.name == target:
+        return
+    base, ext = os.path.splitext(target)
+    i = 2
+    while default_storage.exists(target):
+        target = f"{base}-{i}{ext}"
+        i += 1
+    src = default_storage.path(photo.file.name)
+    dst = default_storage.path(target)
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    if os.path.exists(src):
+        os.replace(src, dst)
+    photo.file.name = target
+    photo.save(update_fields=["file"])
+
+
+def copy_photo(photo, **changes):
+    """Copy a photo (and its file) for another stay, e.g. a returning guest's DL."""
+    import os
+    import shutil
+    from django.core.files.storage import default_storage
+    new = Photo(client=photo.client, guest=photo.guest, kind=photo.kind, via="REUSED",
+                uploaded_by=photo.uploaded_by, **changes)
+    new.file.name = photo.file.name
+    new.save()
+    tmp = f"pending/copy-{new.pk}.jpg"
+    src = default_storage.path(photo.file.name)
+    dst = default_storage.path(tmp)
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    if os.path.exists(src):
+        shutil.copyfile(src, dst)
+    new.file.name = tmp
+    new.save(update_fields=["file"])
+    place_photo(new)
+    return new
+
+
+def delete_photo_file(photo):
+    from django.core.files.storage import default_storage
+    if photo.file.name and default_storage.exists(photo.file.name):
+        default_storage.delete(photo.file.name)
+
+
+def attach_photos(stay, photo_ids, reuse_dl=False):
+    """
+    Link photos taken on the check-in form (they wait in media/pending/) to the saved stay,
+    and, for a returning guest with no new DL photo, copy their last DL photo into this stay.
+    """
+    ids = [int(i) for i in (photo_ids or [])]
+    if ids:
+        for ph in Photo.objects.filter(client=stay.client, id__in=ids, stay__isnull=True):
+            ph.stay = stay
+            if ph.kind in (Photo.DL_FRONT, Photo.DL_BACK):
+                ph.guest = stay.guest
+            ph.save(update_fields=["stay", "guest"])
+            place_photo(ph)
+    if reuse_dl:
+        have = set(stay.photos.filter(kind__in=[Photo.DL_FRONT, Photo.DL_BACK]).values_list("kind", flat=True))
+        for kind in (Photo.DL_FRONT, Photo.DL_BACK):
+            if kind in have:
+                continue
+            last = (Photo.objects.filter(client=stay.client, guest=stay.guest, kind=kind)
+                    .exclude(stay=stay).order_by("-created_at").first())
+            if last:
+                copy_photo(last, stay=stay)

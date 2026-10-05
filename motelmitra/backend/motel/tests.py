@@ -727,3 +727,198 @@ class EarlyCheckinFeeTests(APITestCase):
         # leaving early: room charge drops, early check-in fee is kept (not refunded)
         q = self.client.get(f"/api/stays/{s['id']}/early_quote/?date={today}").data
         self.assertEqual((q["kept_charges"], q["new_total"], q["refund_due"]), ("15.00", "65.00", "100.00"))
+
+
+import shutil as _shutil
+import tempfile as _tempfile
+
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import override_settings
+
+_MEDIA = _tempfile.mkdtemp(prefix="mm-media-")
+
+
+def _jpg(name="p.jpg"):
+    # tiny valid JPEG header is enough: the server stores the bytes as sent
+    return SimpleUploadedFile(name, b"\xff\xd8\xff\xe0" + b"0" * 2000, content_type="image/jpeg")
+
+
+@override_settings(MEDIA_ROOT=_MEDIA)
+class PhotoTests(APITestCase):
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        _shutil.rmtree(_MEDIA, ignore_errors=True)
+
+    def setUp(self):
+        seed()
+        r = self.client.post("/api/auth/login/", {"username": "clerk", "password": "clerk123"}, format="json")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+        self.today = timezone.localdate()
+        self.free = [x for x in self.client.get("/api/rooms/board/").data if not x["occupied"]]
+
+    def checkin(self, i, **kw):
+        r = self.client.post("/api/stays/", {"room": self.free[i]["id"], "check_in_date": str(self.today), "check_in_time": "14:00",
+            "check_out_date": str(self.today + datetime.timedelta(days=2)), "check_out_time": "11:00", "num_guests": 1,
+            "rate": "50", "first_name": "Photo", "last_name": "Guest", "phone": "555-3333", **kw}, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        return r.data
+
+    def test_dl_checkin_reuse_damage_and_phone(self):
+        import os
+        from motel.models import Photo
+        # DL front + back taken on the form before saving -> waiting in pending/
+        f = self.client.post("/api/photos/", {"image": _jpg(), "kind": "DL_FRONT", "via": "WEBCAM"}, format="multipart")
+        b = self.client.post("/api/photos/", {"image": _jpg(), "kind": "DL_BACK"}, format="multipart")
+        self.assertEqual(f.status_code, 201, f.data)
+        self.assertTrue(f.data["file_name"].startswith("pending/"))
+        bad = self.client.post("/api/photos/", {"image": SimpleUploadedFile("x.txt", b"hi", content_type="text/plain"), "kind": "DL_FRONT"}, format="multipart")
+        self.assertEqual(bad.status_code, 400)
+        s = self.checkin(0, photo_ids=[f.data["id"], b.data["id"]])
+        room = self.free[0]["number"]
+        photos = self.client.get(f"/api/photos/?stay={s['id']}").data
+        names = sorted(p["file_name"] for p in photos)
+        folder = f"{self.today:%Y-%m-%d}/Room-{room}/"
+        self.assertTrue(all(n.startswith(folder) for n in names), names)
+        self.assertTrue(names[0].endswith(f"_{room}_DL_1.jpg") and names[1].endswith(f"_{room}_DL_2.jpg"), names)
+        self.assertTrue(all(os.path.exists(os.path.join(_MEDIA, n)) for n in names))
+        # private file: needs login
+        self.assertEqual(self.client.get(photos[0]["url"]).status_code, 200)
+        anon = self.client.__class__()
+        self.assertEqual(anon.get(photos[0]["url"]).status_code, 401)
+
+        # returning guest (same phone): last DL copied into the new stay's folder
+        self.assertEqual(len(self.client.get(f"/api/photos/guest_last_dl/?guest={s['guest']['id']}").data), 2)
+        s2 = self.checkin(1, reuse_dl=True, allow_overlap=True)
+        self.assertEqual(s2["guest"]["id"], s["guest"]["id"])
+        p2 = self.client.get(f"/api/photos/?stay={s2['id']}").data
+        self.assertEqual(sorted(p["kind"] for p in p2), ["DL_BACK", "DL_FRONT"])
+        self.assertTrue(all(f"Room-{self.free[1]['number']}/" in p["file_name"] for p in p2))
+
+        # phone QR session for checkout damage photos
+        sess = self.client.post("/api/photo-sessions/", {"kind": "DAMAGE", "stay": s["id"], "origin": "http://localhost:5173"}, format="json").data
+        self.assertIn("/m/", sess["url"])
+        self.assertNotIn("localhost", sess["url"])
+        self.assertIn("<svg", sess["qr_svg"])
+        phone = self.client.__class__()   # no login
+        self.assertEqual(phone.get(f"/api/phone/{sess['token']}/").data["room"], room)
+        for _ in range(2):
+            self.assertEqual(phone.post(f"/api/phone/{sess['token']}/upload/", {"image": _jpg()}, format="multipart").status_code, 201)
+        st = self.client.get(f"/api/photo-sessions/{sess['token']}/").data
+        self.assertEqual(len(st["photos"]), 2)
+        self.assertTrue(st["photos"][1]["file_name"].endswith(f"_{room}_DAMAGE_2.jpg"), st["photos"][1]["file_name"])
+        self.assertEqual(phone.get("/api/phone/nope/").status_code, 400)
+
+        # checkout with damage fee, notes and add to DNR
+        r = self.client.post(f"/api/stays/{s['id']}/checkout/", {"damage_fee": "75", "damage_notes": "Broken lamp", "add_dnr": True}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual((r.data["damage_fee"], r.data["status"], r.data["guest"]["do_not_rent"]), ("75.00", "CHECKED_OUT", True))
+        self.assertIn("Broken lamp", r.data["comments"])
+
+        # room change on the second stay moves its photos
+        new_room = self.free[2]
+        self.client.patch(f"/api/stays/{s2['id']}/", {"room": new_room["id"], "allow_overlap": True}, format="json")
+        moved = self.client.get(f"/api/photos/?stay={s2['id']}").data
+        self.assertTrue(all(f"Room-{new_room['number']}/" in p["file_name"] for p in moved), [p["file_name"] for p in moved])
+        self.assertTrue(all(os.path.exists(os.path.join(_MEDIA, p["file_name"])) for p in moved))
+
+        # clerk can delete a wrong photo; file is removed
+        pid, pname = moved[0]["id"], moved[0]["file_name"]
+        self.assertEqual(self.client.delete(f"/api/photos/{pid}/").status_code, 204)
+        self.assertFalse(os.path.exists(os.path.join(_MEDIA, pname)))
+        self.assertIsNotNone(self.client.get("/api/business-day/").data["disk_free_gb"])
+
+    def test_dnr_photo_and_early_checkout_damage(self):
+        ph = self.client.post("/api/photos/", {"image": _jpg(), "kind": "DL_FRONT"}, format="multipart").data
+        g = self.client.post("/api/guests/", {"first_name": "Dnr", "last_name": "Photo", "do_not_rent": True, "photo_ids": [ph["id"]]}, format="json").data
+        p = self.client.get(f"/api/photos/?guest={g['id']}").data
+        self.assertTrue(p[0]["file_name"].startswith("DNR/"), p[0]["file_name"])
+        s = self.client.post("/api/stays/", {"room": self.free[3]["id"], "check_in_date": str(self.today - datetime.timedelta(days=1)), "check_in_time": "14:00",
+            "check_out_date": str(self.today + datetime.timedelta(days=3)), "check_out_time": "11:00", "num_guests": 1,
+            "rate": "50", "first_name": "Early", "last_name": "Damage", "cash": "200"}, format="json").data
+        q = self.client.get(f"/api/stays/{s['id']}/early_quote/?date={self.today}&damage_fee=30").data
+        self.assertEqual((q["new_total"], q["refund_due"]), ("80.00", "120.00"))
+        r = self.client.post(f"/api/stays/{s['id']}/early_checkout/", {"date": str(self.today), "damage_fee": "30", "damage_notes": "Stained carpet"}, format="json")
+        self.assertEqual((r.status_code, r.data["damage_fee"], r.data["total_amount"], r.data["refunded"]), (200, "30.00", "80.00", "120.00"))
+
+
+import threading as _threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+
+class _FakePrinter(BaseHTTPRequestHandler):
+    """Minimal eSCL (AirScan) printer: capabilities, scan job, NextDocument (busy once first)."""
+    calls = {"next": 0}
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        if self.path == "/eSCL/ScannerCapabilities":
+            body = b'<scan:ScannerCapabilities xmlns:pwg="x"><pwg:MakeAndModel>Demo LaserJet 100</pwg:MakeAndModel></scan:ScannerCapabilities>'
+            self.send_response(200); self.send_header("Content-Type", "text/xml"); self.end_headers(); self.wfile.write(body)
+        elif self.path == "/eSCL/ScanJobs/42/NextDocument":
+            _FakePrinter.calls["next"] += 1
+            if _FakePrinter.calls["next"] == 1:
+                self.send_response(503); self.end_headers(); return
+            self.send_response(200); self.send_header("Content-Type", "image/jpeg"); self.end_headers()
+            self.wfile.write(b"\xff\xd8\xff\xe0SCANNED" + b"1" * 500)
+        else:
+            self.send_response(404); self.end_headers()
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(n)
+        _FakePrinter.calls["xml"] = body.decode()
+        self.send_response(201); self.send_header("Location", "/eSCL/ScanJobs/42"); self.end_headers()
+
+
+class ScannerTests(APITestCase):
+    def test_direct_scan_and_folder(self):
+        import os
+        import tempfile
+        seed()
+        srv = HTTPServer(("127.0.0.1", 0), _FakePrinter)
+        _threading.Thread(target=srv.serve_forever, daemon=True).start()
+        folder = tempfile.mkdtemp()
+        with open(os.path.join(folder, "scan001.jpg"), "wb") as fh:
+            fh.write(b"\xff\xd8\xff\xe0FOLDER")
+        with open(os.path.join(folder, "notes.txt"), "w") as fh:
+            fh.write("x")
+        try:
+            r = self.client.post("/api/auth/login/", {"username": "owner", "password": "owner123"}, format="json")
+            self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+            # not set yet
+            self.assertEqual(self.client.post("/api/scanner/scan/", {}, format="json").status_code, 400)
+            self.client.patch("/api/settings/", {"scanner_address": f"127.0.0.1:{srv.server_port}", "scan_folder": folder}, format="json")
+            t = self.client.get("/api/scanner/test/").data
+            self.assertEqual((t["direct"]["ok"], t["direct"]["model"], t["folder"]["ok"]), (True, "Demo LaserJet 100", True))
+            r = self.client.post("/api/scanner/scan/", {"area": "DL"}, format="json")
+            self.assertEqual((r.status_code, r["Content-Type"]), (200, "image/jpeg"))
+            self.assertIn(b"SCANNED", b"".join(r.streaming_content) if r.streaming else r.content)
+            self.assertIn("<pwg:Width>1350</pwg:Width>", _FakePrinter.calls["xml"])
+            f = self.client.get("/api/scanner/folder/").data
+            self.assertEqual([x["name"] for x in f["files"]], ["scan001.jpg"])
+            r = self.client.get("/api/scanner/folder/file/", {"name": "scan001.jpg"})
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(self.client.get("/api/scanner/folder/file/", {"name": "../../etc/passwd"}).status_code, 404)
+            # printer switched off
+            self.client.patch("/api/settings/", {"scanner_address": "127.0.0.1:1"}, format="json")
+            self.assertIn("Cannot reach", self.client.post("/api/scanner/scan/", {}, format="json").data["detail"])
+        finally:
+            srv.shutdown()
+
+
+class WifiSettingTests(APITestCase):
+    def test_version_reports_wifi_and_phone_needs_wifi(self):
+        seed()
+        with override_settings(HOST_ON_WIFI=False):
+            self.assertEqual(self.client.get("/api/version/").data["wifi"], False)
+            r = self.client.post("/api/auth/login/", {"username": "clerk", "password": "clerk123"}, format="json")
+            self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+            r = self.client.post("/api/photo-sessions/", {"kind": "DL_FRONT"}, format="json")
+            self.assertEqual(r.status_code, 400)
+            self.assertIn("HOST_ON_WIFI=yes", r.data["detail"])
+        with override_settings(HOST_ON_WIFI=True):
+            self.assertEqual(self.client.get("/api/version/").data["wifi"], True)
+            self.assertEqual(self.client.post("/api/photo-sessions/", {"kind": "DL_FRONT"}, format="json").status_code, 201)

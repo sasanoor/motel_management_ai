@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import api, { errorText } from '../api'
+import { PhotoUploader } from '../components/Photos'
 import { Alert, Empty, Modal, PageHead } from '../components/ui'
 import { fmtDate, nameParts } from '../utils'
 
@@ -93,6 +94,15 @@ export default function Dnr() {
 
 function DnrForm({ initial, onClose, onSaved }) {
   const [f, setF] = useState(() => ({ ...initial, ...nameParts(initial) }))
+  const [dl, setDl] = useState({ DL_FRONT: null, DL_BACK: null })
+  useEffect(() => {
+    if (!initial.id) return
+    api.get('/photos/guest_last_dl/', { params: { guest: initial.id } }).then(({ data }) => {
+      const out = { DL_FRONT: null, DL_BACK: null }
+      data.forEach((p) => { out[p.kind] = p })
+      setDl(out)
+    }).catch(() => {})
+  }, [initial.id])
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value })
@@ -106,7 +116,7 @@ function DnrForm({ initial, onClose, onSaved }) {
     setErr('')
     try {
       const { name: _old, ...rest } = f  // name is built from the parts on the server
-      const body = { ...rest, do_not_rent: true }
+      const body = { ...rest, do_not_rent: true, photo_ids: [dl.DL_FRONT?.id, dl.DL_BACK?.id].filter(Boolean) }
       const { data } = f.id ? await api.patch(`/guests/${f.id}/`, body) : await api.post('/guests/', body)
       onSaved(data)
     } catch (e2) {
@@ -154,6 +164,11 @@ function DnrForm({ initial, onClose, onSaved }) {
         <label>Zip
           <input value={f.zip_code} onChange={set('zip_code')} />
         </label>
+        <div className="span-2">
+          <PhotoUploader mode="DL" value={dl} guest={f.id || undefined}
+            onAdd={(ph) => setDl((p) => ({ ...p, [ph.kind]: ph }))}
+            onRemove={(ph) => { api.delete(`/photos/${ph.id}/`).catch(() => {}); setDl((p) => ({ ...p, [ph.kind]: null })) }} />
+        </div>
         <label className="span-2">Address
           <input value={f.address} onChange={set('address')} />
         </label>

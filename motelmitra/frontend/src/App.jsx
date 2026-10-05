@@ -12,6 +12,7 @@ import { ChargesSettings, Clients, Directory, RoomTypes, Rooms, Users } from './
 import StayDetail from './pages/StayDetail'
 import TodayReport from './pages/TodayReport'
 import NightAudit from './pages/NightAudit'
+import PhoneUpload from './pages/PhoneUpload'
 import Stays from './pages/Stays'
 
 function Guard({ allow, children }) {
@@ -38,6 +39,8 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={user ? <Navigate to="/" replace /> : <Login />} />
+      {/* phone camera page from the QR code: no login */}
+      <Route path="/m/:token" element={<PhoneUpload />} />
       <Route element={<Guard><Layout /></Guard>}>
         <Route index element={<Guard allow={[...STAFF, 'MAINTENANCE']}><Home /></Guard>} />
         <Route path="check-in" element={<Guard allow={STAFF}><CheckIn /></Guard>} />

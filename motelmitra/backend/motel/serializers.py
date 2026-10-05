@@ -4,7 +4,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
 
-from .models import Expense, Guest, Note, Payment, Room, RoomType, Stay, join_name, split_name
+from .models import Expense, Guest, Note, Payment, Photo, attach_photos, Room, RoomType, Stay, join_name, split_name
 
 ZERO = Decimal("0.00")
 
@@ -140,7 +140,7 @@ class StaySerializer(serializers.ModelSerializer):
             "id", "guest", "room", "room_number", "room_type",
             "check_in_date", "check_in_time", "check_out_date", "check_out_time",
             "num_guests", "num_days", "rate_type", "periods", "rate", "room_charge", "adjustment",
-            "pets", "pet_fee", "extra_persons", "extra_person_fee", "card_fee", "late_fee", "early_checkin_fee",
+            "pets", "pet_fee", "extra_persons", "extra_person_fee", "card_fee", "late_fee", "early_checkin_fee", "damage_fee",
             "charges_total", "total_amount", "early", "refunded",
             "amount_paid", "cash_paid", "credit_paid", "balance",
             "clerk", "clerk_name", "comments", "status", "checked_out_at", "renewed_from", "renewed_to",
@@ -243,13 +243,16 @@ class StayWriteSerializer(serializers.ModelSerializer):
     # "Check out & check in again": id of the stay being checked out and renewed
     renew_from = serializers.IntegerField(required=False, allow_null=True, write_only=True)
     periods = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    # photos taken on the form before saving (DL front / back), and "use the guest's last DL photo"
+    photo_ids = serializers.ListField(child=serializers.IntegerField(), required=False, write_only=True)
+    reuse_dl = serializers.BooleanField(required=False, default=False, write_only=True)
 
     class Meta:
         model = Stay
         fields = [
             "id", "room", "check_in_date", "check_in_time", "check_out_date", "check_out_time",
             "num_guests", "rate_type", "periods", "rate", "adjustment", "pets", "pet_fee", "extra_persons", "extra_person_fee", "card_fee",
-            "late_fee", "early_checkin_fee", "comments",
+            "late_fee", "early_checkin_fee", "comments", "photo_ids", "reuse_dl",
             "guest_id", *GUEST_FIELDS, "cash", "credit", "allow_overlap", "renew_from",
         ]
 
@@ -323,6 +326,8 @@ class StayWriteSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"renew_from": "Stay to renew not found."})
             guest_id = guest_id or old.guest_id
         guest_data = self._guest_data(attrs)
+        photo_ids = attrs.pop("photo_ids", None) or []
+        reuse_dl = attrs.pop("reuse_dl", False)
         cash = attrs.pop("cash", ZERO) or ZERO
         credit = attrs.pop("credit", ZERO) or ZERO
 
@@ -360,6 +365,7 @@ class StayWriteSerializer(serializers.ModelSerializer):
                     stay=stay, amount=amount, method=method, paid_at=now,
                     clerk=request.user, is_initial=True,
                 )
+        attach_photos(stay, photo_ids, reuse_dl)
         return stay
 
     @transaction.atomic
@@ -368,13 +374,21 @@ class StayWriteSerializer(serializers.ModelSerializer):
         attrs.pop("renew_from", None)
         attrs.pop("cash", None)
         attrs.pop("credit", None)
+        photo_ids = attrs.pop("photo_ids", None) or []
+        attrs.pop("reuse_dl", None)
         guest_data = self._guest_data(attrs)
         for k, v in guest_data.items():
             setattr(stay.guest, k, v)
         stay.guest.save()
+        old_room = stay.room_id
         for k, v in attrs.items():
             setattr(stay, k, v)
         stay.save()
+        attach_photos(stay, photo_ids, False)
+        if stay.room_id != old_room:   # room changed: photos move to the new room's folder
+            from .models import place_photo
+            for ph in stay.photos.all():
+                place_photo(ph)
         return stay
 
     def to_representation(self, instance):
@@ -451,3 +465,24 @@ def expense_editable(expense, user):
     if user.role == User.CLIENT_ADMIN:
         return True
     return expense.clerk_id == user.id and expense.business_date == business.business_date(expense.client)
+
+
+class PhotoSerializer(serializers.ModelSerializer):
+    url = serializers.SerializerMethodField()
+    file_name = serializers.SerializerMethodField()
+    uploaded_by_name = serializers.SerializerMethodField()
+    kind_label = serializers.CharField(source="get_kind_display", read_only=True)
+
+    class Meta:
+        model = Photo
+        fields = ["id", "kind", "kind_label", "stay", "guest", "via", "url", "file_name", "uploaded_by_name", "created_at"]
+
+    def get_url(self, obj):
+        return f"/api/photos/{obj.id}/file/"
+
+    def get_file_name(self, obj):
+        return obj.file.name
+
+    def get_uploaded_by_name(self, obj):
+        u = obj.uploaded_by
+        return (u.get_full_name() or u.username) if u else ""

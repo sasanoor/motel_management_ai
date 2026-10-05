@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import api, { errorText } from '../api'
 import { useAuth } from '../auth'
+import { PhotoUploader } from '../components/Photos'
 import RoomPicker from '../components/RoomPicker'
 import { Alert, Modal, PageHead } from '../components/ui'
 import {
@@ -60,6 +61,39 @@ export default function CheckIn() {
   const [fees, setFees] = useState(null)               // motel's Charges & Fees settings
   const renewId = !editing ? params.get('renew') : null  // "Check out & check in again"
   const [renewOf, setRenewOf] = useState(null)          // the stay being continued
+  // DL photos: { DL_FRONT, DL_BACK } taken on this form; reused = returning guest's last DL on file
+  const [dl, setDl] = useState({ DL_FRONT: null, DL_BACK: null })
+  const [reused, setReused] = useState({})
+
+  // edit: the stay's own DL photos
+  useEffect(() => {
+    if (!editing) return
+    api.get('/photos/', { params: { stay: id, kind: 'DL' } }).then(({ data }) => {
+      const out = { DL_FRONT: null, DL_BACK: null }
+      data.forEach((p) => { out[p.kind] = p })
+      setDl(out)
+    }).catch(() => {})
+  }, [editing, id])
+
+  // returning guest: show their last DL photo; it is copied into this stay when saved
+  useEffect(() => {
+    if (editing || !f.guest_id) return
+    api.get('/photos/guest_last_dl/', { params: { guest: f.guest_id } }).then(({ data }) => {
+      const out = {}
+      data.forEach((p) => { out[p.kind] = p })
+      setReused(out)
+    }).catch(() => {})
+  }, [editing, f.guest_id])
+
+  function addDl(ph) {
+    const old = dl[ph.kind]
+    if (old && old.id !== ph.id && editing) api.delete(`/photos/${old.id}/`).catch(() => {})  // replaced
+    setDl((p) => ({ ...p, [ph.kind]: ph }))
+  }
+  function removeDl(ph) {
+    api.delete(`/photos/${ph.id}/`).catch(() => {})
+    setDl((p) => ({ ...p, [ph.kind]: null }))
+  }
 
   useEffect(() => { api.get('/settings/').then((r) => setFees(r.data)).catch(() => {}) }, [])
 
@@ -286,6 +320,8 @@ export default function CheckIn() {
     setBusy(true)
     setErr('')
     const payload = {
+      photo_ids: editing ? [] : [dl.DL_FRONT?.id, dl.DL_BACK?.id].filter(Boolean),
+      reuse_dl: !editing && Boolean(f.guest_id),
       ...f, cash: f.cash || 0, credit: f.credit || 0, rate: f.rate || 0,
       adjustment: num(f.adjustment).toFixed(2), allow_overlap: allowOverlap,
       pets: num(f.pets), extra_persons: extraPersons,
@@ -445,6 +481,11 @@ export default function CheckIn() {
             <label>Zip
               <input value={f.zip_code} onChange={set('zip_code')} />
             </label>
+            <div className="span-4">
+              <PhotoUploader mode="DL" value={dl} onAdd={addDl} onRemove={removeDl}
+                stay={editing ? id : undefined} reused={editing ? undefined : reused}
+                title={`DL photos${reused.DL_FRONT || reused.DL_BACK ? ' · last DL on file is used unless you take a new one' : ''}`} />
+            </div>
           </div>
         </section>
 

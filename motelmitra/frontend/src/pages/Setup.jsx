@@ -463,6 +463,68 @@ export function ChargesSettings() {
           </div>
         </form>
       )}
+      {f && <ScannerSettings f={f} setF={setF} />}
     </>
+  )
+}
+
+/** WiFi printer / scanner used by the 🖨 Scan button (DL and damage photos). */
+function ScannerSettings({ f, setF }) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const [test, setTest] = useState(null)
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value })
+
+  async function saveAndTest(e) {
+    e.preventDefault()
+    setBusy(true); setErr(''); setTest(null)
+    try {
+      const { data } = await api.patch('/settings/', {
+        scanner_address: f.scanner_address, scanner_area: f.scanner_area, scan_folder: f.scan_folder,
+      })
+      setF((p) => ({ ...p, ...data }))
+      const r = await api.get('/scanner/test/')
+      setTest(r.data)
+    } catch (e2) { setErr(errorText(e2)) }
+    setBusy(false)
+  }
+
+  return (
+    <form className="card settings-card scanner-card" onSubmit={saveAndTest}>
+      <h2>Scanner (WiFi printer)</h2>
+      <p className="tiny muted">Used by the <strong>🖨 Scan</strong> button for DL and damage photos. Fill in one or both.</p>
+      <Alert>{err}</Alert>
+      <div className="form-grid cols-2">
+        <label>Printer IP address (Scan now)
+          <input value={f.scanner_address || ''} onChange={set('scanner_address')} placeholder="e.g. 192.168.1.50" />
+          <span className="hint">On the printer: Settings → Network / WiFi → IP address. Works with printers that support AirScan / eSCL (most WiFi printers since 2015)</span>
+        </label>
+        <label>Scan area for DL
+          <select value={f.scanner_area || 'DL'} onChange={set('scanner_area')}>
+            <option value="DL">Card size, top-left corner of the glass</option>
+            <option value="PAGE">Full page</option>
+          </select>
+          <span className="hint">Card size gives a clean licence photo without the empty page</span>
+        </label>
+        <label className="span-2">Scan folder on this PC (Scan folder)
+          <input value={f.scan_folder || ''} onChange={set('scan_folder')} placeholder="e.g. C:\Users\FrontDesk\Documents\Scans" />
+          <span className="hint">For any printer: set the printer's "Scan to PC" (HP Smart, Canon IJ Scan, Epson ScanSmart, Brother iPrint&amp;Scan, Windows Scan) to save into this folder</span>
+        </label>
+        <div className="span-2 form-actions">
+          <button className="btn btn-primary" disabled={busy}>{busy ? 'Testing…' : 'Save & test scanner'}</button>
+        </div>
+      </div>
+      {test && (
+        <div className="scanner-test">
+          {test.direct && (test.direct.ok
+            ? <Alert kind="success">✓ Printer found: {test.direct.model}. Scan now is ready.</Alert>
+            : <Alert>Scan now: {test.direct.error}</Alert>)}
+          {test.folder && (test.folder.ok
+            ? <Alert kind="success">✓ Scan folder found. Scan folder is ready.</Alert>
+            : <Alert>Scan folder: {test.folder.error}</Alert>)}
+          {!test.direct && !test.folder && <Alert kind="info">Nothing set: the Scan button will ask you to set this up.</Alert>}
+        </div>
+      )}
+    </form>
   )
 }

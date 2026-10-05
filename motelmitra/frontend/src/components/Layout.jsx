@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import api from '../api'
 import { useAuth } from '../auth'
-import { fmtDay, ROLES, setBusinessDate } from '../utils'
+import { fmtDay, ROLES, setBusinessDate, setWifiHosted } from '../utils'
 import { APP_VERSION } from '../version'
 
 const NAV = {
@@ -53,8 +53,10 @@ export default function Layout() {
   // Business day: pages use it as "today". Loaded before any page shows.
   const [biz, setBiz] = useState(null)        // business day the pages are showing
   const [serverBiz, setServerBiz] = useState(null) // latest from the server (changes at day change time)
+  const [diskGb, setDiskGb] = useState(null)
   const loadBiz = useCallback(() => api.get('/business-day/').then((r) => {
     setServerBiz(r.data.business_date)
+    setDiskGb(r.data.disk_free_gb)
     return r.data
   }), [])
 
@@ -71,7 +73,7 @@ export default function Layout() {
   const [serverVersion, setServerVersion] = useState(null)
   useEffect(() => {
     const check = () => api.get('/version/')
-      .then((r) => setServerVersion(r.data.version))
+      .then((r) => { setServerVersion(r.data.version); setWifiHosted(r.data.wifi) })
       .catch((e) => setServerVersion(e.response?.status === 404 ? 'old' : null))
     check()
     const t = setInterval(check, 60000)
@@ -138,6 +140,12 @@ export default function Layout() {
             <div className="alert alert-error update-banner">
               <strong>MotelMitra was updated but the server is still running the old version.</strong> Saving may fail.
               Double-click <strong>stop_app.bat</strong>, then <strong>start_app.bat</strong>. (Screens {APP_VERSION}, server {serverVersion === 'old' ? 'older' : serverVersion}.)
+            </div>
+          )}
+          {diskGb != null && diskGb < 5 && (
+            <div className="alert alert-error">
+              <strong>Low disk space on the MotelMitra PC: {diskGb} GB free.</strong> Photos may stop saving.
+              Move old photos out of the <strong>backend\media</strong> folder or free up space.
             </div>
           )}
           {dayChanged && (

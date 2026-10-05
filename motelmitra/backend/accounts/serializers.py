@@ -114,7 +114,8 @@ class LoginSerializer(TokenObtainPairSerializer):
 class MotelSettingsSerializer(serializers.ModelSerializer):
     class Meta:
         model = Client
-        fields = ["id", "name", "card_fee_percent", "pet_fee", "extra_person_fee", "included_guests", "late_fee", "early_checkin_fee", "day_change_time"]
+        fields = ["id", "name", "card_fee_percent", "pet_fee", "extra_person_fee", "included_guests", "late_fee", "early_checkin_fee", "day_change_time",
+                  "scanner_address", "scanner_area", "scan_folder"]
         read_only_fields = ["id", "name"]
 
     def validate_card_fee_percent(self, v):

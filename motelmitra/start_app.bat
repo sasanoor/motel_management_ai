@@ -18,8 +18,6 @@ title MotelMitra Launcher
 cd /d "%~dp0"
 set "ROOT=%~dp0"
 
-REM  1 = localhost + WiFi (default), 0 = this PC only
-set "LAN=1"
 set "FRONT_PORT=5173"
 set "BACK_PORT=8000"
 
@@ -28,6 +26,27 @@ for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd"') d
 set "LOG=%ROOT%logs\start_app_%D%.txt"
 
 call :log "================ Starting MotelMitra ================"
+
+REM ---------- WiFi or this PC only: HOST_ON_WIFI=yes / no in backend\.env
+if not exist "%ROOT%backend\.env" if exist "%ROOT%backend\.env.example" copy "%ROOT%backend\.env.example" "%ROOT%backend\.env" >nul
+set "WIFI="
+if exist "%ROOT%backend\.env" for /f "usebackq eol=# tokens=1,* delims==" %%a in ("%ROOT%backend\.env") do if /i "%%a"=="HOST_ON_WIFI" set "WIFI=%%b"
+if not defined WIFI (
+  REM older .env without the setting: add it, yes = same as before, so it is easy to find and change
+  >> "%ROOT%backend\.env" echo.
+  >> "%ROOT%backend\.env" echo # yes = phones, tablets and other PCs on the WiFi can open MotelMitra. no = only this PC ^(localhost^)
+  >> "%ROOT%backend\.env" echo HOST_ON_WIFI=yes
+  set "WIFI=yes"
+)
+set "WIFI=%WIFI: =%"
+set "LAN=1"
+if /i "%WIFI%"=="no" set "LAN=0"
+if /i "%WIFI%"=="n" set "LAN=0"
+if /i "%WIFI%"=="false" set "LAN=0"
+if /i "%WIFI%"=="0" set "LAN=0"
+if /i "%WIFI%"=="off" set "LAN=0"
+if "%LAN%"=="1" (call :log "HOST_ON_WIFI=yes: this PC and the WiFi") else (call :log "HOST_ON_WIFI=no: this PC only, http://localhost:5173")
+if "%LAN%"=="1" (set "WIFIFLAG=True") else (set "WIFIFLAG=False")
 
 REM ---------- detect this PC's IPv4 address (adapter with internet gateway first)
 set "IP="
@@ -57,7 +76,7 @@ set "APPVER=dev"
 if exist "%ROOT%.env" for /f "tokens=2 delims==" %%v in ('findstr /b /c:"APP_VERSION=" "%ROOT%.env"') do set "APPVER=%%v"
 powershell -NoProfile -Command "try{Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 http://127.0.0.1:%FRONT_PORT% | Out-Null; exit 0}catch{exit 1}"
 if errorlevel 1 goto :not_running
-powershell -NoProfile -Command "try{$v=(Invoke-RestMethod -TimeoutSec 3 http://127.0.0.1:%BACK_PORT%/api/version/).version; if($v -eq '%APPVER%'){exit 0}else{exit 1}}catch{exit 1}"
+powershell -NoProfile -Command "try{$r=Invoke-RestMethod -TimeoutSec 3 http://127.0.0.1:%BACK_PORT%/api/version/; if($r.version -eq '%APPVER%' -and [string]$r.wifi -eq '%WIFIFLAG%'){exit 0}else{exit 1}}catch{exit 1}"
 if errorlevel 1 goto :restart
 call :log "MotelMitra is already running (version %APPVER%)."
 call :links
@@ -65,7 +84,7 @@ start "" http://localhost:%FRONT_PORT%
 goto :done
 
 :restart
-call :log "Update found: restarting MotelMitra to load version %APPVER%..."
+call :log "Update or WiFi setting change found: restarting MotelMitra (version %APPVER%, HOST_ON_WIFI=%WIFI%)..."
 taskkill /FI "WINDOWTITLE eq MotelMitra Backend*" /T /F >nul 2>&1
 taskkill /FI "WINDOWTITLE eq MotelMitra Frontend*" /T /F >nul 2>&1
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr LISTENING ^| findstr /C:":%BACK_PORT% " /C:":%FRONT_PORT% "') do taskkill /PID %%p /T /F >nul 2>&1
@@ -99,7 +118,7 @@ if not exist "%ROOT%backend\.env" (
 )
 
 REM ---------- Python packages (first run only)
-%PY% -c "import django, rest_framework, corsheaders, rest_framework_simplejwt, dotenv" >nul 2>&1
+%PY% -c "import django, rest_framework, corsheaders, rest_framework_simplejwt, dotenv, segno" >nul 2>&1
 if errorlevel 1 (
   call :log "Installing Python packages (first run)..."
   %PY% -m pip install -r "%ROOT%backend\requirements.txt" >> "%LOG%" 2>&1

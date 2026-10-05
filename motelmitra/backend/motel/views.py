@@ -16,9 +16,9 @@ from accounts.permissions import (
 )
 
 from . import business, early
-from .models import DayClose, Expense, Guest, Note, Payment, Room, RoomType, Stay
+from .models import DayClose, Expense, Guest, Photo, PhotoSession, delete_photo_file, place_photo, Note, Payment, Room, RoomType, Stay
 from .serializers import (
-    ExpenseSerializer, GuestSerializer, NoteSerializer, PaymentSerializer, RoomSerializer, RoomTypeSerializer,
+    ExpenseSerializer, GuestSerializer, NoteSerializer, PaymentSerializer, PhotoSerializer, RoomSerializer, RoomTypeSerializer,
     StaySerializer, StayWriteSerializer, expense_editable,
 )
 
@@ -188,6 +188,15 @@ def find_dnr(client, name="", phone="", plate="", dl=""):
     return out
 
 
+def _attach_guest_photos(guest, photo_ids):
+    """DL photos added on the DNR form: kept with the guest (media/DNR/)."""
+    for ph in Photo.objects.filter(client=guest.client, id__in=[int(i) for i in (photo_ids or [])],
+                                   stay__isnull=True, guest__isnull=True):
+        ph.guest = guest
+        ph.save(update_fields=["guest"])
+        place_photo(ph)
+
+
 class GuestViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.CreateModelMixin,
                    mixins.UpdateModelMixin, viewsets.GenericViewSet):
     """
@@ -229,10 +238,12 @@ class GuestViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.Crea
             if existing.do_not_rent and not existing.dnr_marked_by_id:
                 existing.dnr_marked_by = request.user
             existing.save()
+            _attach_guest_photos(existing, request.data.get("photo_ids"))
             out = GuestSerializer(existing).data
             out["merged"] = True
             return Response(out, status=status.HTTP_200_OK)
         guest = ser.save(client=client, dnr_marked_by=request.user if data.get("do_not_rent") else None)
+        _attach_guest_photos(guest, request.data.get("photo_ids"))
         return Response(GuestSerializer(guest).data, status=status.HTTP_201_CREATED)
 
     def perform_update(self, serializer):
@@ -241,6 +252,7 @@ class GuestViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.Crea
         if guest.do_not_rent and not was:
             guest.dnr_marked_by = self.request.user
             guest.save()
+        _attach_guest_photos(guest, self.request.data.get("photo_ids"))
 
     @action(detail=False, methods=["get"])
     def dnr_check(self, request):
@@ -439,6 +451,7 @@ class StayViewSet(viewsets.ModelViewSet):
         if request.data.get("late_fee") not in (None, ""):
             fee = _decimal(request.data.get("late_fee"), "late_fee")
             stay.late_fee = fee
+        _apply_damage(stay, request.data, request.user)
         stay.status = Stay.CHECKED_OUT
         stay.checked_out_at = timezone.now()
         stay.save()
@@ -473,6 +486,8 @@ class StayViewSet(viewsets.ModelViewSet):
         """Preview an early checkout: new total, refund due or balance still owed."""
         stay = self.get_object()
         depart, method, custom = self._early_args(stay, request.query_params)
+        if request.query_params.get("damage_fee") not in (None, ""):   # preview only, not saved
+            stay.damage_fee = (stay.damage_fee or ZERO) + _decimal(request.query_params["damage_fee"], "damage_fee")
         return Response(early.quote(stay, depart, method, custom))
 
     @action(detail=True, methods=["post"])
@@ -484,6 +499,8 @@ class StayViewSet(viewsets.ModelViewSet):
         """
         stay = self.get_object()
         depart, method, custom = self._early_args(stay, request.data)
+        if _apply_damage(stay, request.data, request.user):
+            stay.save()
         qt = early.quote(stay, depart, method, custom)
         due = Decimal(qt["refund_due"])
         raw = request.data.get("refund_amount")
@@ -647,6 +664,28 @@ class StayViewSet(viewsets.ModelViewSet):
             stay.save()
         stay = stay_qs(request.user.client).get(pk=stay.pk)
         return Response(StaySerializer(stay).data)
+
+
+def _apply_damage(stay, data, user):
+    """Checkout "Room condition": damage fee (added to the bill), notes, and optionally add the guest to DNR."""
+    changed = False
+    fee = _decimal(data.get("damage_fee") or 0, "damage_fee")
+    notes = (data.get("damage_notes") or "").strip()[:500]
+    if fee > 0:
+        stay.damage_fee = (stay.damage_fee or ZERO) + fee
+        changed = True
+    if fee > 0 or notes:
+        line = f"Room damage at checkout{f' (fee {fee})' if fee > 0 else ''}: {notes or 'see photos'}"
+        stay.comments = (stay.comments + "\n" if stay.comments else "") + line
+        changed = True
+    if str(data.get("add_dnr")).lower() in ("true", "1"):
+        g = stay.guest
+        g.do_not_rent = True
+        g.dnr_reason = (g.dnr_reason + "; " if g.dnr_reason else "") + (f"Room damage: {notes}" if notes else "Room damage")
+        if not g.dnr_marked_by_id:
+            g.dnr_marked_by = user
+        g.save()
+    return changed
 
 
 METHOD_LABELS = {
@@ -1152,6 +1191,18 @@ def _close_row(c):
     }
 
 
+def _disk_free_gb():
+    import shutil
+    from django.conf import settings as dj
+    try:
+        os_path = dj.MEDIA_ROOT
+        import os
+        os.makedirs(os_path, exist_ok=True)
+        return round(shutil.disk_usage(os_path).free / 1024 ** 3, 1)
+    except OSError:
+        return None
+
+
 def _business_state(client):
     biz = business.business_date(client)
     last = business.last_close(client)
@@ -1163,6 +1214,7 @@ def _business_state(client):
         "day_change_time": client.day_change_time.strftime("%H:%M"),
         # a day can be closed once its calendar day has started (no closing tomorrow in advance)
         "can_close": biz <= now.date(),
+        "disk_free_gb": _disk_free_gb(),
         "last_close": _close_row(last) if last else None,
     }
 
@@ -1293,3 +1345,322 @@ def report_payment_history(request):
         totals["paid"] += cash + credit
         totals["balance"] += bal
     return Response({"count": len(rows), "more": more, "rows": rows, "totals": {k: str(v) for k, v in totals.items()}})
+
+
+
+# ------------------------------------------------------------------ photos (DL and room damage)
+MAX_PHOTO = 10 * 1024 * 1024
+
+
+def _save_upload(f, *, client, kind, user, stay=None, guest=None, via="", session=None):
+    import uuid
+    if f is None:
+        raise ValidationError({"image": "Choose a photo."})
+    if not (getattr(f, "content_type", "") or "").startswith("image/"):
+        raise ValidationError({"image": "Only photos (JPG / PNG) can be uploaded."})
+    if f.size > MAX_PHOTO:
+        raise ValidationError({"image": "Photo is larger than 10 MB."})
+    if kind not in dict(Photo.KINDS):
+        raise ValidationError({"kind": "Unknown photo type."})
+    ph = Photo(client=client, kind=kind, stay=stay, guest=guest, via=via[:10], uploaded_by=user, session=session)
+    ph.file.save(f"pending/{uuid.uuid4().hex}.jpg", f, save=False)
+    ph.save()
+    if stay or guest:
+        place_photo(ph)
+    # clean up form photos that were never saved with a check-in (older than 2 days)
+    old = timezone.now() - datetime.timedelta(days=2)
+    for p in Photo.objects.filter(client=client, stay__isnull=True, guest__isnull=True, created_at__lt=old):
+        delete_photo_file(p)
+        p.delete()
+    return ph
+
+
+class PhotoViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, mixins.DestroyModelMixin,
+                   viewsets.GenericViewSet):
+    """
+    DL / damage photos. Files are private: /photos/{id}/file/ needs a logged-in staff user.
+    POST (multipart): image, kind, stay or guest (optional; none = waiting for the check-in to be saved), via.
+    """
+
+    permission_classes = [IsClientStaff]
+    serializer_class = PhotoSerializer
+
+    def get_queryset(self):
+        qs = Photo.objects.filter(client=self.request.user.client).select_related("uploaded_by")
+        p = self.request.query_params
+        if p.get("stay"):
+            qs = qs.filter(stay_id=p["stay"])
+        if p.get("guest"):
+            qs = qs.filter(guest_id=p["guest"])
+        if p.get("ids"):
+            qs = qs.filter(id__in=[int(x) for x in p["ids"].split(",") if x.strip().isdigit()])
+        if p.get("kind") == "DL":
+            qs = qs.filter(kind__in=[Photo.DL_FRONT, Photo.DL_BACK])
+        elif p.get("kind"):
+            qs = qs.filter(kind=p["kind"])
+        return qs
+
+    def create(self, request, *args, **kwargs):
+        client = request.user.client
+        stay = guest = None
+        if request.data.get("stay"):
+            stay = Stay.objects.filter(client=client, pk=request.data["stay"]).first()
+            if not stay:
+                raise ValidationError({"stay": "Stay not found."})
+            guest = stay.guest if request.data.get("kind") in (Photo.DL_FRONT, Photo.DL_BACK) else None
+        elif request.data.get("guest"):
+            guest = Guest.objects.filter(client=client, pk=request.data["guest"]).first()
+        ph = _save_upload(request.FILES.get("image"), client=client, kind=request.data.get("kind"),
+                          user=request.user, stay=stay, guest=guest, via=request.data.get("via") or "FILE")
+        return Response(PhotoSerializer(ph).data, status=status.HTTP_201_CREATED)
+
+    def perform_destroy(self, instance):
+        delete_photo_file(instance)
+        instance.delete()
+
+    @action(detail=True, methods=["get"])
+    def file(self, request, pk=None):
+        from django.http import FileResponse, Http404
+        ph = self.get_object()
+        try:
+            return FileResponse(ph.file.open("rb"), content_type="image/jpeg")
+        except (FileNotFoundError, ValueError):
+            raise Http404("Photo file is missing.")
+
+    @action(detail=False, methods=["get"])
+    def guest_last_dl(self, request):
+        """Returning guest: their last DL photos (front / back), to reuse on a new check-in."""
+        out = []
+        for kind in (Photo.DL_FRONT, Photo.DL_BACK):
+            ph = (Photo.objects.filter(client=request.user.client, guest_id=request.query_params.get("guest"), kind=kind)
+                  .order_by("-created_at").first())
+            if ph:
+                out.append(PhotoSerializer(ph).data)
+        return Response(out)
+
+
+def _lan_ip():
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))   # no data is sent; just picks the WiFi / network address
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except OSError:
+        return "127.0.0.1"
+
+
+@api_view(["POST"])
+@permission_classes([IsClientStaff])
+def photo_session_create(request):
+    """"Use phone": start a 10-minute upload link and return its QR code (SVG)."""
+    import secrets
+    from urllib.parse import urlparse
+    import segno
+    from django.conf import settings as dj
+    if not dj.HOST_ON_WIFI:
+        raise ValidationError({"detail": "Use phone needs MotelMitra on the WiFi: set HOST_ON_WIFI=yes in backend\\.env and run start_app.bat again."})
+    client = request.user.client
+    kind = request.data.get("kind")
+    if kind not in dict(Photo.KINDS):
+        raise ValidationError({"kind": "Unknown photo type."})
+    stay = None
+    if request.data.get("stay"):
+        stay = Stay.objects.filter(client=client, pk=request.data["stay"]).first()
+    sess = PhotoSession.objects.create(
+        token=secrets.token_urlsafe(12), client=client, created_by=request.user, kind=kind, stay=stay,
+        expires_at=timezone.now() + datetime.timedelta(minutes=10),
+    )
+    origin = urlparse(request.data.get("origin") or "http://localhost:5173")
+    host = origin.hostname or "localhost"
+    if host in ("localhost", "127.0.0.1", "::1"):
+        host = _lan_ip()       # a phone cannot open "localhost": use this PC's WiFi address
+    port = f":{origin.port}" if origin.port else ""
+    url = f"{origin.scheme or 'http'}://{host}{port}/m/{sess.token}"
+    svg = segno.make(url, error="m").svg_inline(scale=5, border=2)
+    return Response({"token": sess.token, "url": url, "qr_svg": svg, "expires_at": sess.expires_at}, status=201)
+
+
+@api_view(["GET"])
+@permission_classes([IsClientStaff])
+def photo_session_status(request, token):
+    """The PC polls this to show photos as soon as the phone sends them."""
+    sess = PhotoSession.objects.filter(client=request.user.client, token=token).first()
+    if not sess:
+        raise ValidationError({"token": "Unknown link."})
+    return Response({"expired": sess.expires_at < timezone.now(), "expires_at": sess.expires_at,
+                     "photos": PhotoSerializer(sess.photos.all(), many=True).data})
+
+
+def _phone_session(token):
+    sess = PhotoSession.objects.filter(token=token).select_related("client", "stay", "stay__room").first()
+    if not sess or sess.expires_at < timezone.now():
+        raise ValidationError({"detail": "This photo link has expired. Ask the front desk for a new QR code."})
+    return sess
+
+
+@api_view(["GET"])
+@permission_classes([])
+def phone_info(request, token):
+    """Phone page (no login): what this link is for."""
+    sess = _phone_session(token)
+    return Response({
+        "motel": sess.client.name, "kind": sess.kind, "kind_label": dict(Photo.KINDS)[sess.kind],
+        "room": sess.stay.room.number if sess.stay else None, "expires_at": sess.expires_at,
+        "count": sess.photos.count(),
+    })
+
+
+@api_view(["POST"])
+@permission_classes([])
+def phone_upload(request, token):
+    """Phone page (no login): upload one photo to the session (DL: front or back; damage: many)."""
+    sess = _phone_session(token)
+    kind = request.data.get("kind") or sess.kind
+    if sess.kind == Photo.DAMAGE:
+        kind = Photo.DAMAGE
+    elif kind not in (Photo.DL_FRONT, Photo.DL_BACK):
+        kind = Photo.DL_FRONT
+    if sess.photos.count() >= 20:
+        raise ValidationError({"detail": "Too many photos for one link."})
+    stay = sess.stay
+    ph = _save_upload(request.FILES.get("image"), client=sess.client, kind=kind, user=sess.created_by,
+                      stay=stay, guest=stay.guest if stay and kind != Photo.DAMAGE else None, via="PHONE", session=sess)
+    return Response({"ok": True, "id": ph.id, "kind": ph.kind}, status=201)
+
+
+# ------------------------------------------------------------------ WiFi printer / scanner
+# "Scan now" talks to the printer with eSCL (AirScan), which most WiFi printers made since ~2015 support.
+# "Scan folder" lists the newest images the printer's own "Scan to PC" saved into a folder on this PC.
+ESCL_NS = "http://schemas.hp.com/imaging/escl/2011/05/03"
+
+
+def _scanner_base(client):
+    addr = (client.scanner_address or "").strip().rstrip("/")
+    if not addr:
+        raise ValidationError({"detail": "No scanner set. The admin can add the printer's IP in Charges & Fees."})
+    if not addr.startswith(("http://", "https://")):
+        addr = "http://" + addr
+    return addr
+
+
+def _scanner_request(url, data=None, method="GET", timeout=20):
+    import ssl
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(url, data=data, method=method,
+                                 headers={"Content-Type": "text/xml"} if data else {})
+    ctx = ssl._create_unverified_context()   # printers use self-signed certificates
+    try:
+        return urllib.request.urlopen(req, timeout=timeout, context=ctx)
+    except urllib.error.HTTPError as e:
+        if e.code == 503:
+            raise ValidationError({"detail": "The printer is busy. Wait a moment and try again."})
+        raise ValidationError({"detail": f"The printer answered with error {e.code}. It may not support direct scan; use Scan folder."})
+    except (urllib.error.URLError, OSError, TimeoutError):
+        raise ValidationError({"detail": "Cannot reach the printer. Check it is on, on the same WiFi, and the IP address is right."})
+
+
+@api_view(["GET"])
+@permission_classes([IsClientStaff])
+def scanner_test(request):
+    """Check the scanner: printer model from eSCL, and how many scans are in the scan folder."""
+    import os
+    import re
+    client = request.user.client
+    out = {"direct": None, "folder": None}
+    if client.scanner_address:
+        try:
+            body = _scanner_request(_scanner_base(client) + "/eSCL/ScannerCapabilities", timeout=6).read().decode("utf-8", "ignore")
+            model = re.search(r"<pwg:MakeAndModel>(.*?)</pwg:MakeAndModel>", body)
+            out["direct"] = {"ok": True, "model": model.group(1) if model else "Scanner found"}
+        except ValidationError as e:
+            out["direct"] = {"ok": False, "error": e.detail.get("detail") if isinstance(e.detail, dict) else str(e.detail)}
+    if client.scan_folder:
+        ok = os.path.isdir(client.scan_folder)
+        out["folder"] = {"ok": ok, "error": "" if ok else "Folder not found on this PC."}
+    return Response(out)
+
+
+@api_view(["POST"])
+@permission_classes([IsClientStaff])
+def scanner_scan(request):
+    """Scan now: start a scan job on the printer and return the image (JPEG)."""
+    import time
+    from urllib.parse import urljoin
+    from django.http import HttpResponse
+    client = request.user.client
+    base = _scanner_base(client)
+    area = (request.data.get("area") or client.scanner_area or "DL").upper()
+    # size in 1/300 inch: DL card area (4.5 x 3 in, top-left corner of the glass) or a full Letter page
+    w, h = (1350, 900) if area == "DL" else (2550, 3300)
+    settings_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<scan:ScanSettings xmlns:scan="{ESCL_NS}" xmlns:pwg="http://www.pwg.org/schemas/2010/12/sm">
+  <pwg:Version>2.0</pwg:Version>
+  <pwg:ScanRegions><pwg:ScanRegion>
+    <pwg:ContentRegionUnits>escl:ThreeHundredthsOfInches</pwg:ContentRegionUnits>
+    <pwg:XOffset>0</pwg:XOffset><pwg:YOffset>0</pwg:YOffset>
+    <pwg:Width>{w}</pwg:Width><pwg:Height>{h}</pwg:Height>
+  </pwg:ScanRegion></pwg:ScanRegions>
+  <pwg:InputSource>Platen</pwg:InputSource>
+  <scan:ColorMode>RGB24</scan:ColorMode>
+  <scan:XResolution>300</scan:XResolution><scan:YResolution>300</scan:YResolution>
+  <pwg:DocumentFormat>image/jpeg</pwg:DocumentFormat>
+  <scan:DocumentFormatExt>image/jpeg</scan:DocumentFormatExt>
+</scan:ScanSettings>""".encode()
+    resp = _scanner_request(base + "/eSCL/ScanJobs", data=settings_xml, method="POST", timeout=20)
+    job = resp.headers.get("Location")
+    if not job:
+        raise ValidationError({"detail": "The printer did not start a scan job."})
+    job = urljoin(base + "/", job)
+    for _ in range(30):   # the scan head needs a few seconds
+        try:
+            img = _scanner_request(job.rstrip("/") + "/NextDocument", timeout=60).read()
+            if img:
+                return HttpResponse(img, content_type="image/jpeg")
+        except ValidationError as e:
+            if "busy" not in str(e.detail):
+                raise
+        time.sleep(1)
+    raise ValidationError({"detail": "The scan took too long. Try again."})
+
+
+_SCAN_EXT = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+
+
+@api_view(["GET"])
+@permission_classes([IsClientStaff])
+def scanner_folder(request):
+    """Scan folder: newest images (last 2 days) saved there by the printer's Scan to PC."""
+    import os
+    client = request.user.client
+    folder = client.scan_folder
+    if not folder:
+        raise ValidationError({"detail": "No scan folder set. The admin can add it in Charges & Fees."})
+    if not os.path.isdir(folder):
+        raise ValidationError({"detail": f"Scan folder not found on this PC: {folder}"})
+    cutoff = timezone.now().timestamp() - 2 * 86400
+    files = []
+    for entry in os.scandir(folder):
+        if entry.is_file() and entry.name.lower().endswith(_SCAN_EXT):
+            st = entry.stat()
+            if st.st_mtime >= cutoff:
+                files.append({"name": entry.name, "modified": datetime.datetime.fromtimestamp(st.st_mtime, datetime.timezone.utc),
+                              "size_kb": round(st.st_size / 1024)})
+    files.sort(key=lambda f: f["modified"], reverse=True)
+    return Response({"folder": folder, "files": files[:24]})
+
+
+@api_view(["GET"])
+@permission_classes([IsClientStaff])
+def scanner_folder_file(request):
+    import mimetypes
+    import os
+    from django.http import FileResponse, Http404
+    folder = request.user.client.scan_folder
+    name = os.path.basename(request.query_params.get("name") or "")   # never leave the scan folder
+    path = os.path.join(folder or "", name)
+    if not folder or not name or not name.lower().endswith(_SCAN_EXT) or not os.path.isfile(path):
+        raise Http404("Scan not found.")
+    return FileResponse(open(path, "rb"), content_type=mimetypes.guess_type(name)[0] or "image/jpeg")
