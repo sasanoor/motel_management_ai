@@ -115,6 +115,7 @@ export default function StayDetail() {
           <Row k="Address" v={[g.address, g.city, g.state, g.zip_code].filter(Boolean).join(', ')} />
           <Row k="Car" v={g.car} />
           <Row k="License plate" v={g.license_plate} />
+          <Row k="DL number" v={g.dl_number} />
           <Row k="Previous stays" v={g.stay_count} />
           <Row k="Do not rent" v={g.do_not_rent ? 'Yes' : 'No'} />
         </section>
@@ -132,6 +133,7 @@ export default function StayDetail() {
           {num(s.extra_person_fee) > 0 && <div><span>Extra persons ({s.extra_persons})</span><strong>{money(s.extra_person_fee)}</strong></div>}
           {num(s.card_fee) > 0 && <div><span>Card fee</span><strong>{money(s.card_fee)}</strong></div>}
           {num(s.late_fee) > 0 && <div><span>Late fee</span><strong>{money(s.late_fee)}</strong></div>}
+          {num(s.early_checkin_fee) > 0 && <div><span>Early check-in fee</span><strong>{money(s.early_checkin_fee)}</strong></div>}
           {num(s.adjustment) !== 0 && (
             <div><span>{num(s.adjustment) > 0 ? 'Extra charge' : 'Discount'}</span><strong>{money(Math.abs(num(s.adjustment)))}</strong></div>
           )}

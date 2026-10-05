@@ -70,7 +70,7 @@ class GuestSerializer(serializers.ModelSerializer):
         model = Guest
         fields = [
             "id", "name", "first_name", "middle_name", "last_name", "address", "city", "state", "zip_code", "phone", "car",
-            "license_plate", "do_not_rent", "dnr_reason", "dnr_marked_at", "dnr_marked_by_name",
+            "license_plate", "dl_number", "do_not_rent", "dnr_reason", "dnr_marked_at", "dnr_marked_by_name",
             "stay_count", "last_stay", "created_at",
         ]
         read_only_fields = ["dnr_marked_at"]
@@ -140,7 +140,7 @@ class StaySerializer(serializers.ModelSerializer):
             "id", "guest", "room", "room_number", "room_type",
             "check_in_date", "check_in_time", "check_out_date", "check_out_time",
             "num_guests", "num_days", "rate_type", "periods", "rate", "room_charge", "adjustment",
-            "pets", "pet_fee", "extra_persons", "extra_person_fee", "card_fee", "late_fee",
+            "pets", "pet_fee", "extra_persons", "extra_person_fee", "card_fee", "late_fee", "early_checkin_fee",
             "charges_total", "total_amount", "early", "refunded",
             "amount_paid", "cash_paid", "credit_paid", "balance",
             "clerk", "clerk_name", "comments", "status", "checked_out_at", "renewed_from", "renewed_to",
@@ -212,7 +212,7 @@ def clean_name_parts(attrs, instance=None):
     return attrs
 
 
-GUEST_FIELDS = ["name", "first_name", "middle_name", "last_name", "address", "city", "state", "zip_code", "phone", "car", "license_plate", "do_not_rent"]
+GUEST_FIELDS = ["name", "first_name", "middle_name", "last_name", "address", "city", "state", "zip_code", "phone", "car", "license_plate", "dl_number", "do_not_rent"]
 
 
 class StayWriteSerializer(serializers.ModelSerializer):
@@ -231,6 +231,7 @@ class StayWriteSerializer(serializers.ModelSerializer):
     phone = serializers.CharField(max_length=30, required=False, allow_blank=True, write_only=True)
     car = serializers.CharField(max_length=100, required=False, allow_blank=True, write_only=True)
     license_plate = serializers.CharField(max_length=30, required=False, allow_blank=True, write_only=True)
+    dl_number = serializers.CharField(max_length=40, required=False, allow_blank=True, write_only=True)
     do_not_rent = serializers.BooleanField(required=False, default=False, write_only=True)
 
     # money collected at check-in
@@ -248,7 +249,7 @@ class StayWriteSerializer(serializers.ModelSerializer):
         fields = [
             "id", "room", "check_in_date", "check_in_time", "check_out_date", "check_out_time",
             "num_guests", "rate_type", "periods", "rate", "adjustment", "pets", "pet_fee", "extra_persons", "extra_person_fee", "card_fee",
-            "late_fee", "comments",
+            "late_fee", "early_checkin_fee", "comments",
             "guest_id", *GUEST_FIELDS, "cash", "credit", "allow_overlap", "renew_from",
         ]
 
@@ -279,7 +280,7 @@ class StayWriteSerializer(serializers.ModelSerializer):
             periods = Stay.calc_periods(rate_type, cin, cout, given)
             attrs["periods"] = periods
             fees = ZERO
-            for f in ("pet_fee", "extra_person_fee", "card_fee", "late_fee"):
+            for f in ("pet_fee", "extra_person_fee", "card_fee", "late_fee", "early_checkin_fee"):
                 v = attrs.get(f, getattr(inst, f) if inst else ZERO) or ZERO
                 if v < 0:
                     raise serializers.ValidationError({f: "Cannot be negative."})
@@ -328,6 +329,10 @@ class StayWriteSerializer(serializers.ModelSerializer):
         guest = None
         if guest_id:
             guest = Guest.objects.filter(client=client, pk=guest_id).first()
+        if guest is None and guest_data.get("dl_number", "").strip():
+            dl = "".join(ch for ch in guest_data["dl_number"] if ch.isalnum()).upper()
+            guest = next((g for g in Guest.objects.filter(client=client).exclude(dl_number="")
+                          if "".join(ch for ch in g.dl_number if ch.isalnum()).upper() == dl), None)
         if guest is None and guest_data.get("phone"):
             guest = Guest.objects.filter(client=client, phone=guest_data["phone"]).first()
         if guest is None:

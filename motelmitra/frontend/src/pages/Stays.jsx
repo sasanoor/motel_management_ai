@@ -44,7 +44,7 @@ export default function Stays({ balancesOnly = false }) {
         {!balancesOnly && <Link to="/check-in" className="btn btn-primary">+ New Check-in</Link>}
       </PageHead>
       <div className="filters">
-        <input className="search" placeholder="Search name, phone, plate or room…" value={q} onChange={(e) => filter(setQ)(e.target.value)} />
+        <input className="search" placeholder="Search name, phone, plate, DL or room…" value={q} onChange={(e) => filter(setQ)(e.target.value)} />
         <label className="inline">Staying on
           <input type="date" value={date} onChange={(e) => filter(setDate)(e.target.value)} />
         </label>

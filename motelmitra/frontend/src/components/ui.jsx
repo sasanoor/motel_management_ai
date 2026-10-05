@@ -100,6 +100,10 @@ export function PaymentModal({ stay, onClose, onSaved }) {
     setAdj(r2(Number(text) - base))
   }
 
+  function balanceInCash() {
+    setCash(Math.max(r2(owed + adj + cardFee - num(credit)), 0).toFixed(2))
+  }
+
   function balanceOnCard() {
     const due = owed + adj - num(cash)
     if (due <= 0) return
@@ -135,6 +139,7 @@ export function PaymentModal({ stay, onClose, onSaved }) {
         <div className="subhead span-2">Payment collected</div>
         <label>Cash
           <input type="number" step="0.01" min="0" value={cash} onChange={(e) => { setCash(e.target.value); setAdj(0) }} placeholder="0.00" autoFocus />
+          <button type="button" className="link-btn" onClick={balanceInCash}>Put balance in cash</button>
         </label>
         <label>Credit / card
           <input type="number" step="0.01" min="0" value={credit} onChange={(e) => { setCredit(e.target.value); setAdj(0) }} placeholder="0.00" />

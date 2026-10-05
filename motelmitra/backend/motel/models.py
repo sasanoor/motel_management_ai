@@ -59,6 +59,7 @@ class Guest(models.Model):
     phone = models.CharField(max_length=30, blank=True, db_index=True)
     car = models.CharField(max_length=100, blank=True)
     license_plate = models.CharField(max_length=30, blank=True, db_index=True)
+    dl_number = models.CharField("Driving licence number", max_length=40, blank=True, db_index=True)
     do_not_rent = models.BooleanField(default=False)
     dnr_reason = models.CharField(max_length=255, blank=True)
     dnr_marked_at = models.DateTimeField(null=True, blank=True)
@@ -83,6 +84,7 @@ class Guest(models.Model):
         elif self.name:
             self.name = " ".join(self.name.split())
             self.first_name, self.middle_name, self.last_name = split_name(self.name)
+        self.dl_number = " ".join((self.dl_number or "").upper().split())
         if self.do_not_rent and not self.dnr_marked_at:
             self.dnr_marked_at = timezone.now()
         if not self.do_not_rent:
@@ -154,6 +156,7 @@ class Stay(models.Model):
     extra_person_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     card_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     late_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    early_checkin_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     # early checkout: room charge for the nights actually used, and the booking as it was before
     room_charge_override = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     early_snapshot = models.JSONField(null=True, blank=True)
@@ -211,7 +214,8 @@ class Stay(models.Model):
     @property
     def charges_total(self):
         """Pets + extra persons + card fee + late fee."""
-        return sum((Decimal(x or 0) for x in (self.pet_fee, self.extra_person_fee, self.card_fee, self.late_fee)),
+        return sum((Decimal(x or 0) for x in (self.pet_fee, self.extra_person_fee, self.card_fee, self.late_fee,
+                                                self.early_checkin_fee)),
                    Decimal("0"))
 
     @property

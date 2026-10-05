@@ -120,7 +120,7 @@ export default function PaymentHistory({ isSuper, client, onCSV }) {
                     <span className={`pill ml ${s.status === 'CHECKED_IN' ? 'pill-green' : 'pill-grey'}`}>{s.status === 'CHECKED_IN' ? 'In house' : 'Checked out'}</span>
                   </h3>
                   <div className="history-guest muted">
-                    {[s.guest.phone, s.guest.address, [s.guest.car, s.guest.license_plate].filter(Boolean).join(' · ')].filter(Boolean).join('  |  ') || 'No contact details'}
+                    {[s.guest.phone, s.guest.dl_number && `DL ${s.guest.dl_number}`, s.guest.address, [s.guest.car, s.guest.license_plate].filter(Boolean).join(' · ')].filter(Boolean).join('  |  ') || 'No contact details'}
                   </div>
                 </div>
                 {!isSuper && <button className="btn btn-sm no-print" onClick={() => navigate(`/stays/${s.id}`)}>Open guest</button>}

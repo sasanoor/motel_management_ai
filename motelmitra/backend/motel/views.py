@@ -159,7 +159,7 @@ def _plate(s):
     return "".join(ch for ch in (s or "") if ch.isalnum()).upper()
 
 
-def find_dnr(client, name="", phone="", plate=""):
+def find_dnr(client, name="", phone="", plate="", dl=""):
     """
     Do Not Rent guests matching any of name / phone / plate.
     Phone compares digits only (806-555-0111 = (806) 555 0111), plate ignores spaces and dashes,
@@ -169,6 +169,7 @@ def find_dnr(client, name="", phone="", plate=""):
     name = (name or "").strip().lower()
     phone_d = _digits(phone)
     plate_n = _plate(plate)
+    dl_n = _plate(dl)
     out = []
     for g in Guest.objects.filter(client=client, do_not_rent=True).select_related("dnr_marked_by"):
         why = []
@@ -178,6 +179,8 @@ def find_dnr(client, name="", phone="", plate=""):
             why.append("phone")
         if plate_n and len(plate_n) >= 3 and _plate(g.license_plate) == plate_n:
             why.append("plate")
+        if dl_n and len(dl_n) >= 4 and _plate(g.dl_number) == dl_n:
+            why.append("DL")
         if name and len(name) >= 3 and " ".join(g.name.lower().split()) == " ".join(name.split()):
             why.append("name")
         if why:
@@ -198,7 +201,8 @@ class GuestViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.Crea
         qs = Guest.objects.filter(client=self.request.user.client)
         q = self.request.query_params.get("q")
         if q:
-            qs = qs.filter(Q(name__icontains=q) | Q(phone__icontains=q) | Q(license_plate__icontains=q))
+            qs = qs.filter(Q(name__icontains=q) | Q(phone__icontains=q) | Q(license_plate__icontains=q)
+                           | Q(dl_number__icontains=q))
         if self.request.query_params.get("dnr") == "1":
             qs = qs.filter(do_not_rent=True)
         return qs[:200] if self.action == "list" else qs
@@ -212,6 +216,9 @@ class GuestViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.Crea
         if data.get("phone") and len(_digits(data["phone"])) >= 7:
             existing = next((g for g in Guest.objects.filter(client=client)
                              if _digits(g.phone) and _digits(g.phone)[-10:] == _digits(data["phone"])[-10:]), None)
+        if existing is None and _plate(data.get("dl_number")):
+            existing = next((g for g in Guest.objects.filter(client=client).exclude(dl_number="")
+                             if _plate(g.dl_number) == _plate(data["dl_number"])), None)
         if existing is None and data.get("license_plate"):
             existing = next((g for g in Guest.objects.filter(client=client)
                              if _plate(g.license_plate) == _plate(data["license_plate"])), None)
@@ -237,10 +244,10 @@ class GuestViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.Crea
 
     @action(detail=False, methods=["get"])
     def dnr_check(self, request):
-        """Check-in form "Check DNR" button: is this name / phone / plate on the Do Not Rent list?"""
+        """Check-in form "Check DNR" button: is this name / phone / plate / DL number on the Do Not Rent list?"""
         p = request.query_params
-        hits = find_dnr(request.user.client, p.get("name"), p.get("phone"), p.get("plate"))
-        checked = [k for k in ("name", "phone", "plate") if (p.get(k) or "").strip()]
+        hits = find_dnr(request.user.client, p.get("name"), p.get("phone"), p.get("plate"), p.get("dl"))
+        checked = [k for k in ("name", "phone", "plate", "dl") if (p.get(k) or "").strip()]
         return Response({
             "checked": checked,
             "matches": [{**GuestSerializer(g).data, "matched_on": why} for g, why in hits],
@@ -256,7 +263,11 @@ class GuestViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.Crea
         phone = (request.query_params.get("phone") or "").strip()
         plate = (request.query_params.get("plate") or "").strip()
         name = (request.query_params.get("name") or "").strip()
+        dl = (request.query_params.get("dl") or "").strip()
         cond = Q()
+        if dl and len(_plate(dl)) >= 4:
+            ids = [g.id for g in Guest.objects.filter(client=client).exclude(dl_number="") if _plate(g.dl_number) == _plate(dl)]
+            cond |= Q(id__in=ids)
         if phone:
             cond |= Q(phone=phone)
         if plate:
@@ -311,7 +322,7 @@ class StayViewSet(viewsets.ModelViewSet):
             q = p["q"]
             qs = qs.filter(
                 Q(guest__name__icontains=q) | Q(guest__phone__icontains=q)
-                | Q(guest__license_plate__icontains=q) | Q(room__number__iexact=q)
+                | Q(guest__license_plate__icontains=q) | Q(guest__dl_number__icontains=q) | Q(room__number__iexact=q)
             )
         return qs
 
@@ -1263,7 +1274,7 @@ def report_payment_history(request):
         rows.append({
             "id": s.id, "status": s.status,
             "guest": {"name": g.name, "phone": g.phone, "address": ", ".join(x for x in (g.address, g.city, g.state, g.zip_code) if x),
-                      "car": g.car, "license_plate": g.license_plate, "do_not_rent": g.do_not_rent},
+                      "car": g.car, "license_plate": g.license_plate, "dl_number": g.dl_number, "do_not_rent": g.do_not_rent},
             "room_number": s.room.number, "room_type": s.room.room_type.name,
             "check_in_date": s.check_in_date, "check_out_date": s.check_out_date, "num_days": s.num_days,
             "rate": str(s.rate), "rate_type": s.rate_type, "num_guests": s.num_guests,

@@ -37,7 +37,7 @@ export default function AddStayModal({ stay, onClose, onSaved }) {
   const after = r2(owedNow - num(cash) - num(credit))
   const paying = num(cash) + num(credit)
 
-  function payAllCash() { setCredit(''); setFee(null); setCash(Math.max(r2(newTotal - cardFee - num(stay.amount_paid)), 0).toFixed(2)) }
+  function balanceInCash() { setCash(Math.max(r2(newTotal - num(stay.amount_paid) - num(credit)), 0).toFixed(2)) }
   function balanceOnCard() {
     const due = r2(num(stay.total_amount) + roomAdd + extraAdd - num(stay.amount_paid) - num(cash))
     if (due <= 0) return
@@ -89,9 +89,10 @@ export default function AddStayModal({ stay, onClose, onSaved }) {
           </span>
         </div>
 
-        <div className="subhead span-2">Advance payment <button type="button" className="link-btn" onClick={payAllCash}>Pay all in cash</button></div>
+        <div className="subhead span-2">Advance payment</div>
         <label>Cash
           <input type="number" step="0.01" min="0" value={cash} onChange={(e) => setCash(e.target.value)} placeholder="0.00" />
+          <button type="button" className="link-btn" onClick={balanceInCash}>Put balance in cash</button>
         </label>
         <label>Credit / card
           <input type="number" step="0.01" min="0" value={credit} onChange={(e) => setCredit(e.target.value)} placeholder="0.00" />

@@ -144,7 +144,7 @@ export default function CheckoutModal({ stay, onClose, onDone }) {
               <tbody>
                 <tr><td>Room charge</td><td className="num">{money(quote.room_charge)}</td><td className="tiny muted">was {money(quote.original_room_charge)}</td></tr>
                 {num(stay.extra_person_fee) > 0 && <tr><td>Extra person fee</td><td className="num">{money(quote.extra_person_fee)}</td><td className="tiny muted">{quote.method === 'NO_REFUND' ? 'kept' : `was ${money(stay.extra_person_fee)}, nights used only`}</td></tr>}
-                {num(quote.kept_charges) > 0 && <tr><td>Pet, card and late fees</td><td className="num">{money(quote.kept_charges)}</td><td className="tiny muted">not refunded</td></tr>}
+                {num(quote.kept_charges) > 0 && <tr><td>Pet, card, late and early check-in fees</td><td className="num">{money(quote.kept_charges)}</td><td className="tiny muted">not refunded</td></tr>}
                 {num(quote.adjustment) !== 0 && <tr><td>{num(quote.adjustment) < 0 ? 'Discount' : 'Adjustment'}</td><td className="num">{money(quote.adjustment)}</td><td className="tiny muted">kept</td></tr>}
                 <tr className="em-total"><td>New total</td><td className="num">{money(quote.new_total)}</td><td className="tiny muted">was {money(quote.original_total)}</td></tr>
                 <tr><td>Paid</td><td className="num">{money(quote.paid)}</td><td></td></tr>
