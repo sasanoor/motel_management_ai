@@ -5,7 +5,7 @@ from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
 
-from accounts.views import ClientViewSet, LoginView, UserViewSet, me, motel_settings
+from accounts.views import ClientViewSet, LoginView, UserViewSet, me, motel_settings, version
 from motel import views as mv
 
 router = DefaultRouter()
@@ -22,8 +22,14 @@ urlpatterns = [
     path("api/auth/login/", LoginView.as_view()),
     path("api/auth/refresh/", TokenRefreshView.as_view()),
     path("api/auth/me/", me),
+    path("api/version/", version),
     path("api/settings/", motel_settings),
     path("api/dashboard/", mv.dashboard),
+    path("api/business-day/", mv.business_day),
+    path("api/business-day/preview/", mv.business_day_preview),
+    path("api/business-day/close/", mv.business_day_close),
+    path("api/business-day/reopen/", mv.business_day_reopen),
+    path("api/business-day/history/", mv.business_day_history),
     path("api/maintenance/", mv.maintenance_board),
     path("api/reports/today/", mv.report_today),
     path("api/reports/checkins/", mv.report_checkins),

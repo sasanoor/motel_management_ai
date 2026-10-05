@@ -375,3 +375,22 @@ input.input-owed { color: var(--red); font-weight: 700; }
 .early-note { margin-bottom: 16px; }
 .form-grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
 @media (max-width: 640px) { .form-grid.cols-3 { grid-template-columns: 1fr; } .early-method { grid-template-columns: auto 1fr 90px; } }
+
+/* ---------------- business day + night audit */
+.biz-day { display: flex; flex-direction: column; margin: 0 16px 10px; padding: 8px 12px; border-radius: 8px; background: rgba(255,255,255,.08); color: #fff; text-decoration: none; }
+.biz-day span { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; opacity: .7; }
+.biz-day strong { font-size: 14px; }
+.biz-day:hover { background: rgba(255,255,255,.14); }
+.day-changed { margin-bottom: 16px; }
+.audit-card { display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+.audit-day { display: flex; flex-direction: column; gap: 2px; }
+.audit-day strong { font-size: 26px; color: var(--navy); }
+.audit-action { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.audit-setting { margin-top: 20px; max-width: 520px; }
+@media (max-width: 640px) { .audit-action { align-items: stretch; width: 100%; } }
+.sheet-earlier { color: var(--muted); }
+.sheet .sheet-total td { background: #f6f8fb; font-weight: 700; border-top: 2px solid var(--line); vertical-align: top; }
+.sheet .sheet-total .tiny { font-weight: 400; }
+.update-banner { margin-bottom: 16px; }
+.btn-add { border-color: var(--primary); color: var(--primary); }
+.add-stay-sum strong { color: var(--navy); }

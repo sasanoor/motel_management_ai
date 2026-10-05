@@ -97,8 +97,8 @@ class PaymentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Payment
-        fields = ["id", "stay", "amount", "method", "kind", "paid_at", "clerk", "clerk_name", "is_initial", "notes"]
-        read_only_fields = ["stay", "paid_at", "clerk", "is_initial", "kind"]
+        fields = ["id", "stay", "amount", "method", "kind", "paid_at", "business_date", "clerk", "clerk_name", "is_initial", "notes"]
+        read_only_fields = ["stay", "paid_at", "business_date", "clerk", "is_initial", "kind"]
 
     def get_clerk_name(self, obj):
         return (obj.clerk.get_full_name() or obj.clerk.username) if obj.clerk else ""

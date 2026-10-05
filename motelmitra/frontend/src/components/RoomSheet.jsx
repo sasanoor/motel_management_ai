@@ -7,7 +7,7 @@ import { BalanceCell, Empty } from './ui'
  * Every room for one date. A room rented more than once gets one row per entry;
  * vacant rooms get an empty row with a Check in button.
  */
-export default function RoomSheet({ date, rooms, stays, onPay, onCheckout }) {
+export default function RoomSheet({ date, rooms, stays, onPay, onCheckout, onAddStay }) {
   const navigate = useNavigate()
   if (!rooms?.length) return <Empty>No rooms set up yet.</Empty>
 
@@ -30,6 +30,25 @@ export default function RoomSheet({ date, rooms, stays, onPay, onCheckout }) {
 
   const checkIn = (room) => navigate(`/check-in?room=${room.id}&date=${date}`)
 
+  // Money is counted on the business day it was taken. Earlier payments show as "Paid".
+  const money4 = (s) => {
+    let cash = 0, credit = 0, earlier = 0, lastDay = null
+    for (const p of s.payments || []) {
+      const day = p.business_date || p.paid_at?.slice(0, 10)
+      if (day === date) { if (p.method === 'CASH') cash += num(p.amount); else credit += num(p.amount) }
+      else if (day < date) { earlier += num(p.amount); lastDay = day }
+    }
+    return { cash, credit, earlier, lastDay }
+  }
+  const tot = { total: 0, cash: 0, credit: 0, balance: 0, arrivals: 0 }
+  stays.forEach((s) => {
+    const m = money4(s)
+    if (s.check_in_date === date) { tot.total += num(s.total_amount); tot.arrivals += 1 }
+    tot.cash += m.cash
+    tot.credit += m.credit
+    tot.balance += Math.max(num(s.balance), 0)
+  })
+
   return (
     <div className="table-wrap">
       <table className="table sheet">
@@ -42,7 +61,8 @@ export default function RoomSheet({ date, rooms, stays, onPay, onCheckout }) {
             <th className="num">Current day</th>
             <th>Days left</th>
             <th className="num">Total</th>
-            <th className="num">Paid</th>
+            <th className="num">Cash</th>
+            <th className="num">Credit</th>
             <th className="num">Balance</th>
             <th>Status</th>
             <th></th>
@@ -55,14 +75,17 @@ export default function RoomSheet({ date, rooms, stays, onPay, onCheckout }) {
               {list.length === 0 ? (
                 <tr>
                   <td><span className="room-chip">{room.number}</span><div className="tiny muted">{room.room_type}</div></td>
-                  <td colSpan={8} className="muted vacant-cell">Vacant · {money(room.default_rate)}</td>
+                  <td colSpan={9} className="muted vacant-cell">Vacant · {money(room.default_rate)}</td>
                   <td><span className="pill pill-grey">Vacant</span></td>
                   <td className="row-actions">
                     <button className="btn btn-sm btn-primary" onClick={() => checkIn(room)}>Check in</button>
                   </td>
                 </tr>
               ) : (
-                list.map((s, i) => (
+                list.map((s, i) => {
+                  const m = money4(s)
+                  const stayOver = s.check_in_date < date
+                  return (
                   <Fragment key={s.id}>
                     <tr className="clickable" onClick={() => navigate(`/stays/${s.id}`)}>
                       <td>
@@ -80,30 +103,64 @@ export default function RoomSheet({ date, rooms, stays, onPay, onCheckout }) {
                       <td className="num">{s.num_days}</td>
                       <td className="num"><CurrentDay stay={s} date={date} /></td>
                       <td><DaysLeft stay={s} date={date} /></td>
-                      <td className="num">{money(s.total_amount)}<div className="tiny muted">{money(s.rate)}{rateTypeInfo(s.rate_type).short}</div></td>
-                      <td className="num">{money(s.amount_paid)}</td>
+                      <td className={`num ${stayOver ? 'sheet-earlier' : ''}`} title={stayOver ? `Checked in ${fmtDate(s.check_in_date)}; counted in that day's total` : ''}>
+                        {money(s.total_amount)}<div className="tiny muted">{money(s.rate)}{rateTypeInfo(s.rate_type).short}</div>
+                      </td>
+                      {m.cash === 0 && m.credit === 0 && m.earlier > 0 ? (
+                        <td colSpan={2} className="num">
+                          {num(s.balance) > 0
+                            ? <span className="pill pill-warn">Part paid</span>
+                            : <span className="pill pill-green">Paid</span>}
+                          <div className="tiny muted">{money(m.earlier)}{m.lastDay ? ` by ${fmtDate(m.lastDay)}` : ''}</div>
+                        </td>
+                      ) : (
+                        <>
+                          <td className="num">{m.cash ? money(m.cash) : <span className="muted">—</span>}</td>
+                          <td className="num">
+                            {m.credit ? money(m.credit) : <span className="muted">—</span>}
+                            {m.earlier > 0 && <div className="tiny muted">+{money(m.earlier)} earlier</div>}
+                          </td>
+                        </>
+                      )}
                       <td className="num"><BalanceCell value={s.balance} /></td>
                       <td>{label(s)}</td>
                       <td className="row-actions" onClick={(e) => e.stopPropagation()}>
                         {num(s.balance) > 0 && <button className="btn btn-sm btn-warn" onClick={() => onPay(s)}>Pay</button>}
                         {s.status === 'CHECKED_IN' && <button className="btn btn-sm" onClick={() => onCheckout(s)}>Check out</button>}
+                        {s.status === 'CHECKED_IN' && onAddStay && (
+                          <button className="btn btn-sm btn-add" title="Guest stays longer / pays in advance" onClick={() => onAddStay(s)}>+ Add stay</button>
+                        )}
                       </td>
                     </tr>
                     {i === list.length - 1 && freeTonight(list) && (
                       <tr className="rent-again">
                         <td></td>
-                        <td colSpan={9} className="muted vacant-cell">Free for tonight</td>
+                        <td colSpan={10} className="muted vacant-cell">Free for tonight</td>
                         <td className="row-actions">
                           <button className="btn btn-sm btn-primary" onClick={() => checkIn(room)}>Check in</button>
                         </td>
                       </tr>
                     )}
                   </Fragment>
-                ))
+                  )
+                })
               )}
             </tbody>
           )
         })}
+        <tfoot>
+          <tr className="sheet-total">
+            <td colSpan={6}>
+              Totals for {fmtDate(date)}
+              <div className="tiny muted">Total = {tot.arrivals} check-in{tot.arrivals === 1 ? '' : 's'} on this date · Cash / Credit = money taken on this date</div>
+            </td>
+            <td className="num">{money(tot.total)}</td>
+            <td className="num">{money(tot.cash)}</td>
+            <td className="num">{money(tot.credit)}</td>
+            <td className="num"><span className={tot.balance > 0 ? 'owed' : ''}>{money(tot.balance)}</span></td>
+            <td colSpan={2} className="num"><strong>{money(tot.cash + tot.credit)}</strong><div className="tiny muted">collected</div></td>
+          </tr>
+        </tfoot>
       </table>
     </div>
   )

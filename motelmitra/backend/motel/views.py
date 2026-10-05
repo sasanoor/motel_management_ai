@@ -15,8 +15,8 @@ from accounts.permissions import (
     IsClientStaff, IsClientStaffOrSuperAdmin, IsMaintenanceOrStaff, get_request_client,
 )
 
-from . import early
-from .models import Guest, Note, Payment, Room, RoomType, Stay
+from . import business, early
+from .models import DayClose, Guest, Note, Payment, Room, RoomType, Stay
 from .serializers import (
     GuestSerializer, NoteSerializer, PaymentSerializer, RoomSerializer, RoomTypeSerializer,
     StaySerializer, StayWriteSerializer,
@@ -56,6 +56,12 @@ def stay_qs(client):
 
 def paid(stay, method=None):
     return sum((p.amount for p in stay.payments.all() if method is None or p.method == method), ZERO)
+
+
+def paid_on(stay, day, method=None):
+    """Money received for a stay on one business day (net of refunds)."""
+    return sum((p.amount for p in stay.payments.all()
+                if p.business_date == day and (method is None or p.method == method)), ZERO)
 
 
 def pay_type(p):
@@ -123,8 +129,8 @@ class RoomViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["get"])
     def board(self, request):
         """Every active room with its status for a date (room board / check-in picker)."""
-        day = parse_date(request.query_params.get("date"))
         client = request.user.client
+        day = parse_date(request.query_params.get("date"), business.business_date(client))
         stays = stay_qs(client).filter(is_deleted=False, check_in_date__lte=day, check_out_date__gte=day)
         by_room = {s.room_id: s for s in occupying_on(stays, day)}
         rooms = Room.objects.filter(client=client, is_active=True).select_related("room_type")
@@ -402,7 +408,8 @@ class StayViewSet(viewsets.ModelViewSet):
     def _early_args(self, stay, data):
         if stay.status != Stay.CHECKED_IN:
             raise ValidationError({"detail": "Only a checked-in guest can check out early."})
-        today = timezone.localdate()
+        biz = business.business_date(stay.client)
+        today = max(timezone.localdate(), biz)
         depart = parse_date(data.get("date"), today, "date")
         if depart < stay.check_in_date:
             raise ValidationError({"date": "Departure cannot be before the check-in date."})
@@ -478,6 +485,69 @@ class StayViewSet(viewsets.ModelViewSet):
                     stay=stay, amount=-refund, method=refund_method, kind=Payment.REFUND,
                     paid_at=timezone.now(), clerk=request.user, notes=notes or "Early checkout refund",
                 )
+        stay = stay_qs(request.user.client).get(pk=stay.pk)
+        return Response(StaySerializer(stay).data)
+
+    @action(detail=True, methods=["post"])
+    def extend(self, request, pk=None):
+        """
+        Add stay: guest stays longer (usually paying in advance). Same entry, same rate.
+        Body: periods (nights / weeks / months by the stay's rent type), cash, credit, card_fee, notes,
+              allow_overlap (rent anyway if the room is booked after the current checkout).
+        """
+        stay = self.get_object()
+        if stay.status != Stay.CHECKED_IN:
+            raise ValidationError({"detail": "Only a guest who is in house can add stay."})
+        try:
+            n = int(request.data.get("periods") or 0)
+        except (TypeError, ValueError):
+            n = 0
+        if n < 1 or n > 366:
+            raise ValidationError({"periods": "Enter how many to add (1 or more)."})
+        old_out = stay.check_out_date
+        if stay.rate_type == Stay.WEEKLY:
+            new_out = old_out + datetime.timedelta(days=7 * n)
+        elif stay.rate_type == Stay.MONTHLY:
+            m = old_out.month - 1 + n
+            y, m = old_out.year + m // 12, m % 12 + 1
+            import calendar
+            new_out = old_out.replace(year=y, month=m, day=min(old_out.day, calendar.monthrange(y, m)[1]))
+        else:
+            new_out = old_out + datetime.timedelta(days=n)
+        added_nights = (new_out - old_out).days
+
+        other = (Stay.objects.filter(room=stay.room, is_deleted=False, status=Stay.CHECKED_IN,
+                                     check_in_date__lt=new_out, check_out_date__gt=old_out)
+                 .exclude(pk=stay.pk).select_related("guest").first())
+        if other and request.data.get("allow_overlap") not in (True, "true", "1", 1):
+            raise ValidationError({"overlap": f"Room {stay.room.number} is booked for {other.guest.name} "
+                                              f"from {other.check_in_date:%m/%d/%Y}. Add stay anyway?"})
+
+        cash = _decimal(request.data.get("cash") or 0, "cash")
+        credit = _decimal(request.data.get("credit") or 0, "credit")
+        fee = _decimal(request.data.get("card_fee") or 0, "card_fee")
+        if fee > 0 and credit <= 0:
+            raise ValidationError({"card_fee": "Card fee needs a card amount."})
+        notes = (request.data.get("notes") or "").strip()[:255]
+        unit = {Stay.DAILY: "night", Stay.WEEKLY: "week", Stay.MONTHLY: "month"}[stay.rate_type]
+
+        with transaction.atomic():
+            # extra person fee is per night: add the same nightly amount for the new nights
+            if stay.extra_person_fee and stay.num_days:
+                per_night = Decimal(stay.extra_person_fee) / stay.num_days
+                stay.extra_person_fee = (Decimal(stay.extra_person_fee) + per_night * added_nights).quantize(Decimal("0.01"))
+            if stay.rate_type != Stay.DAILY:
+                stay.periods = stay.periods + n
+            stay.check_out_date = new_out
+            stay.card_fee = (stay.card_fee or ZERO) + fee
+            stay.comments = (stay.comments + "\n" if stay.comments else "") + (
+                f"Stay added: {n} {unit}{'s' if n > 1 else ''}, checkout {old_out:%m/%d/%Y} -> {new_out:%m/%d/%Y}.")
+            stay.save()
+            now = timezone.now()
+            for amt, method in ((cash, Payment.CASH), (credit, Payment.CREDIT)):
+                if amt > 0:
+                    Payment.objects.create(stay=stay, amount=amt, method=method, paid_at=now, clerk=request.user,
+                                           notes=notes or f"Advance for added stay to {new_out:%m/%d/%Y}")
         stay = stay_qs(request.user.client).get(pk=stay.pk)
         return Response(StaySerializer(stay).data)
 
@@ -563,7 +633,7 @@ def _decimal(value, field):
 def dashboard(request):
     """Home page: checkouts due on the date, everyone staying that date, quick stats."""
     client = request.user.client
-    day = parse_date(request.query_params.get("date"))
+    day = parse_date(request.query_params.get("date"), business.business_date(client))
     base = stay_qs(client).filter(is_deleted=False)
     staying = list(base.filter(check_in_date__lte=day, check_out_date__gte=day).order_by("room__number"))
     checkouts = [s for s in staying if s.check_out_date == day]
@@ -603,8 +673,8 @@ def dashboard(request):
 
 
 # ------------------------------------------------------------------ reports
-def _date_range(request, max_days=93):
-    today = timezone.localdate()
+def _date_range(request, max_days=93, client=None):
+    today = business.business_date(client)
     start = parse_date(request.query_params.get("start"), today, "start")
     end = parse_date(request.query_params.get("end"), start, "end")
     if end < start:
@@ -619,26 +689,30 @@ def _date_range(request, max_days=93):
 def report_checkins(request):
     """Daily check-ins. Includes every payment on the stay, including later balance payments."""
     client = get_request_client(request)
-    start, end = _date_range(request)
+    start, end = _date_range(request, client=client)
     stays = stay_qs(client).filter(is_deleted=False, check_in_date__range=(start, end)).order_by("check_in_date", "room__number")
-    rows, totals = [], {"total": ZERO, "cash": ZERO, "credit": ZERO, "paid": ZERO, "balance": ZERO}
+    rows, totals = [], {"total": ZERO, "cash": ZERO, "credit": ZERO, "paid_later": ZERO, "paid": ZERO, "balance": ZERO}
     for s in stays:
-        cash, credit = paid(s, Payment.CASH), paid(s, Payment.CREDIT)
-        bal = s.total_amount - cash - credit
+        # cash / credit = taken on the check-in day; money taken on later days counts on those days
+        cash, credit = paid_on(s, s.check_in_date, Payment.CASH), paid_on(s, s.check_in_date, Payment.CREDIT)
+        all_paid = paid(s)
+        later = all_paid - cash - credit
+        bal = s.total_amount - all_paid
         rows.append({
             "id": s.id, "check_in_date": s.check_in_date, "room_number": s.room.number,
             "room_type": s.room.room_type.name, "guest_name": s.guest.name,
             "num_guests": s.num_guests, "num_days": s.num_days, "rate": str(s.rate),
             "rate_type": s.rate_type, "periods": s.periods, "fees": str(s.charges_total),
             "total": str(s.total_amount), "cash": str(cash), "credit": str(credit),
-            "paid": str(cash + credit), "balance": str(bal),
+            "paid_later": str(later), "paid": str(all_paid), "balance": str(bal),
             "clerk": (s.clerk.get_full_name() or s.clerk.username) if s.clerk else "",
             "status": s.status,
         })
         totals["total"] += s.total_amount
         totals["cash"] += cash
         totals["credit"] += credit
-        totals["paid"] += cash + credit
+        totals["paid_later"] += later
+        totals["paid"] += all_paid
         totals["balance"] += bal
     return Response({
         "start": start, "end": end, "count": len(rows), "rows": rows,
@@ -651,18 +725,15 @@ def report_checkins(request):
 def report_collections(request):
     """Money actually collected per day (by payment date), cash vs credit, net of refunds given."""
     client = get_request_client(request)
-    start, end = _date_range(request)
-    tz = timezone.get_current_timezone()
-    lo = timezone.make_aware(datetime.datetime.combine(start, datetime.time.min), tz)
-    hi = timezone.make_aware(datetime.datetime.combine(end + datetime.timedelta(days=1), datetime.time.min), tz)
+    start, end = _date_range(request, client=client)
     pays = (
-        Payment.objects.filter(stay__client=client, stay__is_deleted=False, paid_at__gte=lo, paid_at__lt=hi)
+        Payment.objects.filter(stay__client=client, stay__is_deleted=False, business_date__range=(start, end))
         .select_related("stay", "stay__guest", "stay__room", "clerk").order_by("paid_at")
     )
     by_day, detail = {}, []
     totals = {"cash": ZERO, "credit": ZERO, "refunds": ZERO, "total": ZERO}
     for p in pays:
-        d = timezone.localdate(p.paid_at)
+        d = p.business_date
         row = by_day.setdefault(d, {"date": d, "cash": ZERO, "credit": ZERO, "refunds": ZERO, "total": ZERO, "count": 0})
         if p.kind == Payment.REFUND:
             row["refunds"] += -p.amount
@@ -674,7 +745,7 @@ def report_collections(request):
         totals[key] += p.amount
         totals["total"] += p.amount
         detail.append({
-            "id": p.id, "paid_at": p.paid_at, "method": p.method, "amount": str(p.amount),
+            "id": p.id, "paid_at": p.paid_at, "business_date": p.business_date, "method": p.method, "amount": str(p.amount),
             "type": pay_type(p),
             "guest_name": p.stay.guest.name, "room_number": p.stay.room.number,
             "check_in_date": p.stay.check_in_date,
@@ -712,7 +783,7 @@ def report_outstanding(request):
 def report_occupancy(request):
     """Occupied rooms per night, and by room type."""
     client = get_request_client(request)
-    start, end = _date_range(request)
+    start, end = _date_range(request, client=client)
     rooms = list(Room.objects.filter(client=client, is_active=True).select_related("room_type"))
     total_rooms = len(rooms)
     type_totals = {}
@@ -762,11 +833,8 @@ def report_today(request):
     ?date=YYYY-MM-DD (default today)   ?mine=1 limits to the logged-in clerk's entries.
     """
     client = request.user.client
-    day = parse_date(request.query_params.get("date"))
+    day = parse_date(request.query_params.get("date"), business.business_date(client))
     mine = request.query_params.get("mine") == "1"
-    tz = timezone.get_current_timezone()
-    lo = timezone.make_aware(datetime.datetime.combine(day, datetime.time.min), tz)
-    hi = lo + datetime.timedelta(days=1)
 
     def clerk_name(u):
         return (u.get_full_name() or u.username) if u else ""
@@ -784,7 +852,7 @@ def report_today(request):
 
     # money received on this date (by payment time)
     pays = list(
-        Payment.objects.filter(stay__client=client, stay__is_deleted=False, paid_at__gte=lo, paid_at__lt=hi)
+        Payment.objects.filter(stay__client=client, stay__is_deleted=False, business_date=day)
         .select_related("stay", "stay__guest", "stay__room", "clerk").order_by("paid_at")
     )
     if mine:
@@ -808,8 +876,9 @@ def report_today(request):
 
     checkin_rows, booked, owed = [], ZERO, ZERO
     for s in checkins:
-        c, cr = paid(s, Payment.CASH), paid(s, Payment.CREDIT)
-        bal = s.total_amount - c - cr
+        c, cr = paid_on(s, day, Payment.CASH), paid_on(s, day, Payment.CREDIT)
+        other = paid(s) - c - cr   # taken on other days (counted on those days)
+        bal = s.total_amount - paid(s)
         booked += s.total_amount
         owed += max(bal, ZERO)
         checkin_rows.append({
@@ -817,7 +886,8 @@ def report_today(request):
             "guest_name": s.guest.name, "num_guests": s.num_guests, "num_days": s.num_days,
             "check_out_date": s.check_out_date, "rate": str(s.rate), "total": str(s.total_amount),
             "rate_type": s.rate_type, "periods": s.periods,
-            "cash": str(c), "credit": str(cr), "balance": str(bal), "clerk": clerk_name(s.clerk),
+            "cash": str(c), "credit": str(cr), "paid_other_days": str(other),
+            "balance": str(bal), "clerk": clerk_name(s.clerk),
             "do_not_rent": s.guest.do_not_rent,
         })
 
@@ -856,7 +926,7 @@ def report_today(request):
             "balance": str(s.total_amount - paid(s)), "status": s.status,
         } for s in checkouts],
         "payments": [{
-            "id": p.id, "paid_at": p.paid_at, "method": p.method, "amount": str(p.amount),
+            "id": p.id, "paid_at": p.paid_at, "business_date": p.business_date, "method": p.method, "amount": str(p.amount),
             "type": pay_type(p),
             "guest_name": p.stay.guest.name, "room_number": p.stay.room.number,
             "stay_id": p.stay_id, "check_in_date": p.stay.check_in_date, "clerk": clerk_name(p.clerk),
@@ -905,7 +975,7 @@ def maintenance_board(request):
     No guest details or money are sent.
     """
     client = request.user.client
-    day = parse_date(request.query_params.get("date"))
+    day = parse_date(request.query_params.get("date"), business.business_date(client))
     stays = (
         Stay.objects.filter(client=client, is_deleted=False, check_out_date=day)
         .select_related("room", "room__room_type").order_by("room__number")
@@ -950,3 +1020,121 @@ def maintenance_board(request):
         "rooms": rooms,
         "other_notes": other_notes,
     })
+
+
+# ------------------------------------------------------------------ night audit (close the business day)
+def day_summary(client, day):
+    """Totals for one business day, saved with the Night Audit."""
+    base = stay_qs(client).filter(is_deleted=False)
+    pays = list(Payment.objects.filter(stay__client=client, stay__is_deleted=False, business_date=day))
+    cash = sum((p.amount for p in pays if p.method == Payment.CASH), ZERO)
+    credit = sum((p.amount for p in pays if p.method == Payment.CREDIT), ZERO)
+    refunds = sum((-p.amount for p in pays if p.kind == Payment.REFUND), ZERO)
+    staying = list(base.filter(check_in_date__lte=day, check_out_date__gte=day))
+    total_rooms = Room.objects.filter(client=client, is_active=True).count()
+    occupied = len({s.room_id for s in occupying_on(staying, day)})
+    due_out = [s for s in staying if s.check_out_date == day and s.check_in_date != day and s.status == Stay.CHECKED_IN]
+    arrivals = [s for s in staying if s.check_in_date == day]
+    unpaid = [s for s in arrivals if s.total_amount - paid(s) > 0]
+    return {
+        "date": day.isoformat(),
+        "checkins": len(arrivals),
+        "checkouts_done": len([s for s in staying if s.check_out_date == day and s.status == Stay.CHECKED_OUT]),
+        "still_due_out": len(due_out),
+        "still_due_out_rooms": [s.room.number for s in due_out],
+        "unpaid_checkins": len(unpaid),
+        "unpaid_amount": str(sum((s.total_amount - paid(s) for s in unpaid), ZERO)),
+        "occupied": occupied,
+        "total_rooms": total_rooms,
+        "payments": len(pays),
+        "cash": str(cash),
+        "credit": str(credit),
+        "refunds": str(refunds),
+        "collected": str(cash + credit),
+    }
+
+
+def _close_row(c):
+    return {
+        "date": c.date, "closed_at": c.closed_at,
+        "closed_by": (c.closed_by.get_full_name() or c.closed_by.username) if c.closed_by else "",
+        "summary": c.summary,
+    }
+
+
+def _business_state(client):
+    biz = business.business_date(client)
+    last = business.last_close(client)
+    now = timezone.localtime()
+    return {
+        "business_date": biz,
+        "calendar_date": now.date(),
+        "now": now,
+        "day_change_time": client.day_change_time.strftime("%H:%M"),
+        # a day can be closed once its calendar day has started (no closing tomorrow in advance)
+        "can_close": biz <= now.date(),
+        "last_close": _close_row(last) if last else None,
+    }
+
+
+@api_view(["GET"])
+@permission_classes([IsMaintenanceOrStaff])
+def business_day(request):
+    """Current business day, used as 'today' everywhere in the app."""
+    return Response(_business_state(request.user.client))
+
+
+@api_view(["GET"])
+@permission_classes([IsClientStaff])
+def business_day_preview(request):
+    client = request.user.client
+    biz = business.business_date(client)
+    return Response({**_business_state(client), "summary": day_summary(client, biz)})
+
+
+@api_view(["POST"])
+@permission_classes([IsClientStaff])
+def business_day_close(request):
+    """
+    Night Audit: close the current business day. The next day starts right away,
+    so new check-ins and payments count on the next day.
+    Body: {"date": "YYYY-MM-DD"} must match the current business day (stops double clicks / stale screens).
+    """
+    client = request.user.client
+    with transaction.atomic():
+        # lock the motel row so two desks cannot close the same day twice
+        type(client).objects.select_for_update().get(pk=client.pk)
+        biz = business.business_date(client)
+        asked = parse_date(request.data.get("date"), biz)
+        if asked != biz:
+            raise ValidationError({"date": f"Business day is {biz:%m/%d/%Y}. Refresh the page and try again."})
+        if biz > timezone.localdate():
+            raise ValidationError({"date": f"{biz:%m/%d/%Y} has not started yet, so it cannot be closed."})
+        DayClose.objects.create(client=client, date=biz, closed_at=timezone.now(), closed_by=request.user,
+                                summary=day_summary(client, biz))
+    return Response(_business_state(client), status=status.HTTP_201_CREATED)
+
+
+@api_view(["POST"])
+@permission_classes([IsClientStaff])
+def business_day_reopen(request):
+    """Client admin: undo the last Night Audit (e.g. pressed by mistake)."""
+    if request.user.role != User.CLIENT_ADMIN:
+        raise PermissionDenied("Only the client admin can reopen a closed day.")
+    client = request.user.client
+    last = business.last_close(client)
+    if not last:
+        raise ValidationError({"detail": "No closed day to reopen."})
+    moved = Payment.objects.filter(stay__client=client, business_date__gt=last.date).count()
+    last.delete()
+    state = _business_state(client)
+    state["note"] = (f"{moved} payment(s) taken after the close stay on the day they were taken."
+                     if moved else "")
+    return Response(state)
+
+
+@api_view(["GET"])
+@permission_classes([IsClientStaff])
+def business_day_history(request):
+    closes = DayClose.objects.filter(client=request.user.client).select_related("closed_by")[:60]
+    return Response([_close_row(c) for c in closes])

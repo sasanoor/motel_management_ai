@@ -38,8 +38,14 @@ links() {
     [ "$LAN" = "1" ] && { echo "WiFi devices:     http://$IP:$FRONT_PORT"; echo "Django admin:     http://$IP:$BACK_PORT/admin/"; }
     echo; echo "The WiFi address can change if the router restarts. Start the app again to refresh it."; } > "$ROOT/app_links.txt"
 }
+APPVER="$(cat "$ROOT/VERSION" 2>/dev/null | tr -d '[:space:]')"
 if curl -s -o /dev/null http://localhost:5173; then
-  log "MotelMitra is already running."; links; exit 0
+  RUNNING="$(curl -s http://127.0.0.1:8000/api/version/ | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')"
+  if [ "$RUNNING" = "$APPVER" ]; then
+    log "MotelMitra is already running (version $APPVER)."; links; exit 0
+  fi
+  log "Update found: restarting MotelMitra to load version $APPVER..."
+  "$ROOT/stop_app.sh" >/dev/null 2>&1; sleep 2
 fi
 
 PY="$(command -v python3 || command -v python)" || fail "Python not found."

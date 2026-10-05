@@ -58,11 +58,11 @@ export default function Reports() {
   function exportCSV() {
     if (!data) return
     if (tab === 'checkins') downloadCSV(`checkins_${start}_${end}`,
-      ['Check-in', 'Room', 'Type', 'Guest', 'Guests', 'Days', 'Rate', 'Fees', 'Total', 'Cash', 'Credit', 'Balance', 'Clerk'],
-      data.rows.map((r) => [r.check_in_date, r.room_number, r.room_type, r.guest_name, r.num_guests, r.num_days, r.rate, r.fees, r.total, r.cash, r.credit, r.balance, r.clerk]))
+      ['Check-in', 'Room', 'Type', 'Guest', 'Guests', 'Days', 'Rate', 'Fees', 'Total', 'Cash (check-in day)', 'Credit (check-in day)', 'Paid later', 'Balance', 'Clerk'],
+      data.rows.map((r) => [r.check_in_date, r.room_number, r.room_type, r.guest_name, r.num_guests, r.num_days, r.rate, r.fees, r.total, r.cash, r.credit, r.paid_later, r.balance, r.clerk]))
     if (tab === 'collections') downloadCSV(`collections_${start}_${end}`,
-      ['Paid at', 'Type', 'Method', 'Amount', 'Guest', 'Room', 'Check-in date', 'Clerk'],
-      data.payments.map((p) => [p.paid_at, p.type, p.method, p.amount, p.guest_name, p.room_number, p.check_in_date, p.clerk]))
+      ['Business day', 'Paid at', 'Type', 'Method', 'Amount', 'Guest', 'Room', 'Check-in date', 'Clerk'],
+      data.payments.map((p) => [p.business_date, p.paid_at, p.type, p.method, p.amount, p.guest_name, p.room_number, p.check_in_date, p.clerk]))
     if (tab === 'outstanding') downloadCSV('outstanding_balances',
       ['Check-in', 'Checkout', 'Room', 'Guest', 'Phone', 'Total', 'Paid', 'Balance'],
       data.rows.map((r) => [r.check_in_date, r.check_out_date, r.room_number, r.guest_name, r.phone, r.total, r.paid, r.balance]))
@@ -119,7 +119,7 @@ export default function Reports() {
             {!data.rows.length ? <Empty>No check-ins in this period.</Empty> : (
               <div className="table-wrap">
                 <table className="table">
-                  <thead><tr><th>Check-in</th><th>Room</th><th>Guest</th><th className="num">Guests</th><th className="num">Days</th><th className="num">Rate</th><th className="num">Fees</th><th className="num">Total</th><th className="num">Cash</th><th className="num">Credit</th><th className="num">Balance</th><th>Clerk</th></tr></thead>
+                  <thead><tr><th>Check-in</th><th>Room</th><th>Guest</th><th className="num">Guests</th><th className="num">Days</th><th className="num">Rate</th><th className="num">Fees</th><th className="num">Total</th><th className="num">Cash</th><th className="num">Credit</th><th className="num">Paid later</th><th className="num">Balance</th><th>Clerk</th></tr></thead>
                   <tbody>
                     {data.rows.map((r) => (
                       <tr key={r.id} className={isSuper ? '' : 'clickable'} onClick={() => open(r.id)}>
@@ -133,13 +133,17 @@ export default function Reports() {
                         <td className="num">{money(r.total)}</td>
                         <td className="num">{money(r.cash)}</td>
                         <td className="num">{money(r.credit)}</td>
+                        <td className="num">
+                          {Number(r.paid_later) ? <span className="muted">{money(r.paid_later)}</span> : <span className="muted">—</span>}
+                          {Number(r.balance) <= 0 && <div><span className="pill pill-green">Paid</span></div>}
+                        </td>
                         <td className="num"><BalanceCell value={r.balance} /></td>
                         <td>{r.clerk}</td>
                       </tr>
                     ))}
                   </tbody>
                   <tfoot>
-                    <tr><td colSpan={7}>Total</td><td className="num">{money(data.totals.total)}</td><td className="num">{money(data.totals.cash)}</td><td className="num">{money(data.totals.credit)}</td><td className="num">{money(data.totals.balance)}</td><td></td></tr>
+                    <tr><td colSpan={7}>Total</td><td className="num">{money(data.totals.total)}</td><td className="num">{money(data.totals.cash)}</td><td className="num">{money(data.totals.credit)}</td><td className="num muted">{money(data.totals.paid_later)}</td><td className="num">{money(data.totals.balance)}</td><td></td></tr>
                   </tfoot>
                 </table>
               </div>

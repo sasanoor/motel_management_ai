@@ -226,9 +226,17 @@ class Payment(models.Model):
     REFUND = "REFUND"
     kind = models.CharField(max_length=10, choices=[(PAYMENT, "Payment"), (REFUND, "Refund")], default=PAYMENT)
     notes = models.CharField(max_length=255, blank=True)
+    # The business day the money was received on (reports and the room sheet count it on this day)
+    business_date = models.DateField(null=True, blank=True, db_index=True)
 
     class Meta:
         ordering = ["paid_at"]
+
+    def save(self, *args, **kwargs):
+        if not self.business_date:
+            from .business import business_date
+            self.business_date = business_date(self.stay.client)
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.method} {self.amount} for stay {self.stay_id}"
@@ -252,3 +260,21 @@ class Note(models.Model):
 
     def __str__(self):
         return f"{self.date} {self.room or 'General'}: {self.text[:40]}"
+
+
+class DayClose(models.Model):
+    """Night Audit: the front desk closed this business day; the next day starts right away."""
+
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="day_closes")
+    date = models.DateField()
+    closed_at = models.DateTimeField()
+    closed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL,
+                                  related_name="day_closes")
+    summary = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-date"]
+        unique_together = [("client", "date")]
+
+    def __str__(self):
+        return f"{self.client} closed {self.date}"

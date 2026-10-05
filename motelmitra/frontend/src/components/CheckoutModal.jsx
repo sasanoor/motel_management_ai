@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import api, { errorText } from '../api'
-import { addDays, fmtDate, fmtTime, money, nowTime, num, todayISO } from '../utils'
+import { addDays, calendarToday, fmtDate, fmtTime, money, nowTime, num, todayISO } from '../utils'
 import { Alert, Modal } from './ui'
 
 const METHODS = [
@@ -19,7 +19,8 @@ const METHODS = [
  */
 export default function CheckoutModal({ stay, onClose, onDone }) {
   const navigate = useNavigate()
-  const today = todayISO()
+  // later of business day and calendar day: leaving at 7 AM on the checkout date is not early
+  const today = [todayISO(), calendarToday()].sort()[1]
   const early = today >= stay.check_in_date && today < stay.check_out_date
   const late = !early && (today > stay.check_out_date || (today === stay.check_out_date && nowTime() > (stay.check_out_time || '').slice(0, 5)))
 

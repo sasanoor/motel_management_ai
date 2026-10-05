@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import api, { errorText } from '../api'
 import { useAuth } from '../auth'
+import AddStayModal from '../components/AddStayModal'
 import CheckoutModal from '../components/CheckoutModal'
 import { Alert, BalanceCell, PageHead, PaymentModal, RefundModal, StatusPill } from '../components/ui'
 import { fmtDate, fmtDateTime, fmtTime, money, num, periodText, rateTypeInfo } from '../utils'
@@ -19,6 +20,7 @@ export default function StayDetail() {
   const [paying, setPaying] = useState(false)
   const [checkingOut, setCheckingOut] = useState(false)
   const [refunding, setRefunding] = useState(false)
+  const [adding, setAdding] = useState(false)
 
   const load = useCallback(() => {
     api.get(`/stays/${id}/`).then((r) => setS(r.data)).catch((e) => setErr(errorText(e)))
@@ -77,7 +79,7 @@ export default function StayDetail() {
         {num(s.balance) > 0 && <button className="btn btn-warn" onClick={() => setPaying(true)}>Take payment</button>}
         <Link className="btn" to={`/stays/${s.id}/edit`}>Edit</Link>
         {s.status === 'CHECKED_IN'
-          ? <button className="btn" onClick={() => setCheckingOut(true)}>Check out</button>
+          ? <><button className="btn btn-add" onClick={() => setAdding(true)}>+ Add stay</button><button className="btn" onClick={() => setCheckingOut(true)}>Check out</button></>
           : <button className="btn" onClick={() => act('reopen', undoText(s))}>Undo checkout</button>}
         {num(s.balance) < 0 && <button className="btn btn-warn" onClick={() => setRefunding(true)}>Refund {money(-num(s.balance))}</button>}
         <button className="btn" onClick={toggleDnr}>{g.do_not_rent ? 'Remove DNR flag' : 'Flag Do Not Rent'}</button>
@@ -142,11 +144,12 @@ export default function StayDetail() {
         {s.payments.length > 0 && (
           <div className="table-wrap">
             <table className="table">
-              <thead><tr><th>Date</th><th>Type</th><th>Method</th><th className="num">Amount</th><th>Clerk</th><th>Notes</th></tr></thead>
+              <thead><tr><th>Business day</th><th>Taken at</th><th>Type</th><th>Method</th><th className="num">Amount</th><th>Clerk</th><th>Notes</th></tr></thead>
               <tbody>
                 {s.payments.map((p) => (
                   <tr key={p.id} className={p.kind === 'REFUND' ? 'refund-row' : ''}>
-                    <td>{fmtDateTime(p.paid_at)}</td>
+                    <td><strong>{fmtDate(p.business_date)}</strong></td>
+                    <td className="tiny muted">{fmtDateTime(p.paid_at)}</td>
                     <td>{p.kind === 'REFUND' ? 'Refund' : p.is_initial ? 'At check-in' : 'Balance payment'}</td>
                     <td>{p.method === 'CASH' ? 'Cash' : 'Credit'}</td>
                     <td className="num">{money(p.amount)}</td>
@@ -161,6 +164,7 @@ export default function StayDetail() {
       </section>
 
       {checkingOut && <CheckoutModal stay={s} onClose={() => setCheckingOut(false)} onDone={load} />}
+      {adding && <AddStayModal stay={s} onClose={() => setAdding(false)} onSaved={(d) => { setS(d); setAdding(false) }} />}
       {refunding && <RefundModal stay={s} onClose={() => setRefunding(false)} onSaved={(d) => { setS(d); setRefunding(false) }} />}
       {paying && <PaymentModal stay={s} onClose={() => setPaying(false)} onSaved={(d) => { setS(d); setPaying(false) }} />}
     </>

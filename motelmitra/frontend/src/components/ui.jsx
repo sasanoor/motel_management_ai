@@ -106,6 +106,7 @@ export function PaymentModal({ stay, onClose, onSaved }) {
     const c = fee == null ? due / (1 - pct / 100) : due + num(fee)
     setCredit(r2(c).toFixed(2))
   }
+  // balance edit is applied last: changing cash / card / fee clears it so it never goes stale
 
   async function save(e) {
     e.preventDefault()
@@ -133,19 +134,21 @@ export function PaymentModal({ stay, onClose, onSaved }) {
       <form onSubmit={save} className="form-grid cols-2">
         <div className="subhead span-2">Payment collected</div>
         <label>Cash
-          <input type="number" step="0.01" min="0" value={cash} onChange={(e) => setCash(e.target.value)} placeholder="0.00" autoFocus />
+          <input type="number" step="0.01" min="0" value={cash} onChange={(e) => { setCash(e.target.value); setAdj(0) }} placeholder="0.00" autoFocus />
         </label>
         <label>Credit / card
-          <input type="number" step="0.01" min="0" value={credit} onChange={(e) => setCredit(e.target.value)} placeholder="0.00" />
+          <input type="number" step="0.01" min="0" value={credit} onChange={(e) => { setCredit(e.target.value); setAdj(0) }} placeholder="0.00" />
           <button type="button" className="link-btn" onClick={balanceOnCard}>Put balance on card</button>
         </label>
         <label>Card fee
           <span className="fee-input">
             <input type="number" step="0.01" min="0" value={fee ?? cardFee}
-              onChange={(e) => setFee(e.target.value === '' ? 0 : Number(e.target.value))} />
-            {fee != null && <button type="button" className="fee-reset" title="Back to auto" onClick={() => setFee(null)}>↺</button>}
+              onChange={(e) => { setFee(e.target.value === '' ? 0 : Number(e.target.value)); setAdj(0) }} />
+            {fee != null && <button type="button" className="fee-reset" title="Back to auto" onClick={() => { setFee(null); setAdj(0) }}>↺</button>}
           </span>
-          <span className="hint">{pct}% of the card amount, added to the guest's charges</span>
+          <span className="hint">
+            {pct > 0 ? `${pct}% of the card amount, added to the guest's charges` : 'Card fee % is 0. The admin sets it in Charges & Fees'}
+          </span>
         </label>
         <label>Balance after payment
           <input
