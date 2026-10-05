@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import api, { errorText } from '../api'
+import AddStayModal from '../components/AddStayModal'
 import CheckoutModal from '../components/CheckoutModal'
 import NotesPanel from '../components/NotesPanel'
 import RoomSheet from '../components/RoomSheet'
@@ -13,6 +14,7 @@ export default function Dashboard() {
   const [data, setData] = useState(null)
   const [err, setErr] = useState('')
   const [paying, setPaying] = useState(null)
+  const [adding, setAdding] = useState(null)   // Add stay (extend + advance payment)
   const [tab, setTab] = useState('checkouts')
   const [showAvail, setShowAvail] = useState(false)
   const navigate = useNavigate()
@@ -73,7 +75,7 @@ export default function Dashboard() {
 
       <div className="card no-pad">
         {data && tab === 'sheet' && (
-          <RoomSheet date={date} rooms={data.rooms} stays={data.staying} onPay={setPaying} onCheckout={checkout} />
+          <RoomSheet date={date} rooms={data.rooms} stays={data.staying} onPay={setPaying} onCheckout={checkout} onAddStay={setAdding} />
         )}
         {data && tab === 'notes' && (
           <NotesPanel date={date} rooms={data.rooms} onCount={load} />
@@ -103,6 +105,9 @@ export default function Dashboard() {
 
       {paying && (
         <PaymentModal stay={paying} onClose={() => setPaying(null)} onSaved={() => { setPaying(null); load() }} />
+      )}
+      {adding && (
+        <AddStayModal stay={adding} onClose={() => setAdding(null)} onSaved={() => { setAdding(null); load() }} />
       )}
     </>
   )

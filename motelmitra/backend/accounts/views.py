@@ -1,6 +1,8 @@
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import ValidationError
+from django.conf import settings
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework_simplejwt.views import TokenObtainPairView
 
@@ -84,3 +86,10 @@ def motel_settings(request):
         ser.save()
         return Response(ser.data)
     return Response(MotelSettingsSerializer(client).data)
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def version(request):
+    """Running server version; start_app.bat and the screens use it to spot an old server after an update."""
+    return Response({"version": settings.APP_VERSION})

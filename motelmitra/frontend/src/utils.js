@@ -5,9 +5,23 @@ export const ROLES = {
   MAINTENANCE: 'Maintenance',
 }
 
-export function todayISO() {
+// Business day from the server (Night Audit / day change time). "Today" everywhere in the app.
+let businessDate = null
+export function setBusinessDate(iso) { businessDate = iso || null }
+
+export function calendarToday() {
   const d = new Date()
   return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10)
+}
+
+export function todayISO() {
+  return businessDate || calendarToday()
+}
+
+export function fmtDay(iso) {
+  if (!iso) return ''
+  const d = new Date(iso + 'T00:00:00')
+  return d.toLocaleDateString('en-US', { weekday: 'short', month: '2-digit', day: '2-digit', year: 'numeric' })
 }
 
 export function nowTime() {

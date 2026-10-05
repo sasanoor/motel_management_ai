@@ -11,6 +11,7 @@ import Reports from './pages/Reports'
 import { ChargesSettings, Clients, Directory, RoomTypes, Rooms, Users } from './pages/Setup'
 import StayDetail from './pages/StayDetail'
 import TodayReport from './pages/TodayReport'
+import NightAudit from './pages/NightAudit'
 import Stays from './pages/Stays'
 
 function Guard({ allow, children }) {
@@ -47,6 +48,7 @@ export default function App() {
         <Route path="directory" element={<Guard allow={STAFF}><Directory /></Guard>} />
         <Route path="dnr" element={<Guard allow={STAFF}><Dnr /></Guard>} />
         <Route path="today" element={<Guard allow={STAFF}><TodayReport /></Guard>} />
+        <Route path="night-audit" element={<Guard allow={STAFF}><NightAudit /></Guard>} />
         <Route path="reports" element={<Reports />} />
         <Route path="rooms" element={<Guard allow={ADMIN}><Rooms /></Guard>} />
         <Route path="room-types" element={<Guard allow={ADMIN}><RoomTypes /></Guard>} />

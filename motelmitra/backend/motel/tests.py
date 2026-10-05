@@ -4,10 +4,18 @@ from django.core.management import call_command
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
+from accounts.models import Client
+
+
+def seed():
+    call_command("seed_demo", verbosity=0)
+    # tests run at any hour: make the business day the calendar day
+    Client.objects.update(day_change_time=datetime.time(0, 0))
+
 
 class MotelFlowTests(APITestCase):
     def setUp(self):
-        call_command("seed_demo", verbosity=0)
+        seed()
 
     def login(self, username, password):
         r = self.client.post("/api/auth/login/", {"username": username, "password": password}, format="json")
@@ -320,7 +328,7 @@ class EarlyCheckoutTests(APITestCase):
     """Early checkout + refunds, late fee."""
 
     def setUp(self):
-        call_command("seed_demo", verbosity=0)
+        seed()
         r = self.client.post("/api/auth/login/", {"username": "clerk", "password": "clerk123"}, format="json")
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
         self.today = timezone.localdate()
@@ -423,7 +431,7 @@ class EarlyCheckoutTests(APITestCase):
 
 class SplitPaymentTests(APITestCase):
     def test_cash_and_card_with_fee(self):
-        call_command("seed_demo", verbosity=0)
+        seed()
         r = self.client.post("/api/auth/login/", {"username": "clerk", "password": "clerk123"}, format="json")
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
         today = timezone.localdate()
@@ -439,7 +447,7 @@ class SplitPaymentTests(APITestCase):
         self.assertEqual(self.client.post(f"/api/stays/{s['id']}/payments/", {"cash": "5", "card_fee": "1"}, format="json").status_code, 400)
 
     def test_edit_balance_at_payment(self):
-        call_command("seed_demo", verbosity=0)
+        seed()
         r = self.client.post("/api/auth/login/", {"username": "clerk", "password": "clerk123"}, format="json")
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
         today = timezone.localdate()
@@ -451,3 +459,149 @@ class SplitPaymentTests(APITestCase):
         r = self.client.post(f"/api/stays/{s['id']}/payments/", {"cash": "40", "credit": "0", "adjustment_change": "-12"}, format="json")
         self.assertEqual((r.status_code, r.data["adjustment"], r.data["total_amount"], r.data["balance"]), (201, "-12.00", "58.00", "0.00"))
         self.assertEqual(self.client.post(f"/api/stays/{s['id']}/payments/", {"cash": "0", "adjustment_change": "-500"}, format="json").status_code, 400)
+
+
+class BusinessDayTests(APITestCase):
+    """Night Audit and counting money on the day it was received."""
+
+    def setUp(self):
+        seed()
+        self.today = timezone.localdate()
+
+    def login(self, u, p):
+        r = self.client.post("/api/auth/login/", {"username": u, "password": p}, format="json")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+
+    def test_auto_change_time(self):
+        from . import business
+        c = Client.objects.get(name__icontains="sunset")
+        c.day_change_time = datetime.time(11, 0)
+        tz = timezone.get_current_timezone()
+        early = timezone.make_aware(datetime.datetime.combine(self.today, datetime.time(6, 51)), tz)
+        late = timezone.make_aware(datetime.datetime.combine(self.today, datetime.time(11, 5)), tz)
+        self.assertEqual(business.business_date(c, early), self.today - datetime.timedelta(days=1))
+        self.assertEqual(business.business_date(c, late), self.today)
+
+    def test_close_day_and_money_by_day(self):
+        self.login("clerk", "clerk123")
+        st = self.client.get("/api/business-day/").data
+        self.assertEqual(st["business_date"], self.today)
+        room = next(x for x in self.client.get("/api/rooms/board/").data if not x["occupied"])
+        s = self.client.post("/api/stays/", {"room": room["id"], "check_in_date": str(self.today), "check_in_time": "14:00",
+            "check_out_date": str(self.today + datetime.timedelta(days=2)), "check_out_time": "11:00", "num_guests": 1,
+            "rate": "35", "name": "Pays Later", "cash": "18"}, format="json").data
+        prev = self.client.get("/api/business-day/preview/").data
+        self.assertEqual(prev["summary"]["cash"], "18.00")
+
+        # Night Audit: day closes, next day starts right away
+        self.assertEqual(self.client.post("/api/business-day/close/", {"date": str(self.today - datetime.timedelta(days=1))}, format="json").status_code, 400)
+        r = self.client.post("/api/business-day/close/", {"date": str(self.today)}, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        tomorrow = self.today + datetime.timedelta(days=1)
+        self.assertEqual(r.data["business_date"], tomorrow)
+        self.assertFalse(r.data["can_close"])   # tomorrow has not started on the calendar
+        self.assertEqual(self.client.post("/api/business-day/close/", {"date": str(tomorrow)}, format="json").status_code, 400)
+        self.assertEqual(r.data["last_close"]["summary"]["cash"], "18.00")
+
+        # balance paid now counts on the new business day, not the check-in day
+        r = self.client.post(f"/api/stays/{s['id']}/payments/", {"cash": "52", "credit": "0"}, format="json")
+        self.assertEqual(r.data["payments"][-1]["business_date"], str(tomorrow))
+        rep = self.client.get(f"/api/reports/checkins/?start={self.today}&end={self.today}").data
+        row = next(x for x in rep["rows"] if x["id"] == s["id"])
+        self.assertEqual((row["cash"], row["paid_later"], row["balance"]), ("18.00", "52.00", "0.00"))
+        col = self.client.get(f"/api/reports/collections/?start={self.today}&end={tomorrow}").data
+        by_day = {str(d["date"]): d["cash"] for d in col["days"]}
+        self.assertEqual(by_day.get(str(tomorrow)), "52.00")
+        t1 = self.client.get(f"/api/reports/today/?date={self.today}").data
+        self.assertEqual(next(x for x in t1["checkins"] if x["id"] == s["id"])["paid_other_days"], "52.00")
+        t2 = self.client.get("/api/reports/today/").data   # defaults to the business day
+        self.assertEqual(t2["date"], tomorrow)
+        self.assertTrue(any(p["stay_id"] == s["id"] and p["amount"] == "52.00" for p in t2["payments"]))
+        # dashboard defaults to the business day too
+        self.assertEqual(self.client.get("/api/dashboard/").data["date"], tomorrow)
+
+        # reopen: admin only
+        self.assertEqual(self.client.post("/api/business-day/reopen/").status_code, 403)
+        self.login("owner", "owner123")
+        r = self.client.post("/api/business-day/reopen/")
+        self.assertEqual((r.status_code, r.data["business_date"]), (200, self.today))
+        self.assertEqual(len(self.client.get("/api/business-day/history/").data), 0)
+
+
+class AddStayTests(APITestCase):
+    def test_extend_with_advance(self):
+        seed()
+        r = self.client.post("/api/auth/login/", {"username": "clerk", "password": "clerk123"}, format="json")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+        today = timezone.localdate()
+        free = [x for x in self.client.get("/api/rooms/board/").data if not x["occupied"]]
+        s = self.client.post("/api/stays/", {"room": free[0]["id"], "check_in_date": str(today), "check_in_time": "14:00",
+            "check_out_date": str(today + datetime.timedelta(days=2)), "check_out_time": "11:00", "num_guests": 3,
+            "rate": "60", "extra_person_fee": "20", "name": "Extender", "cash": "140"}, format="json").data
+        self.assertEqual(s["total_amount"], "140.00")
+        r = self.client.post(f"/api/stays/{s['id']}/extend/", {"periods": 3, "cash": "120", "credit": "92.70", "card_fee": "2.70"}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        # 5 nights x 60 + extra person 10/night x 5 + card fee 2.70
+        self.assertEqual((r.data["check_out_date"], r.data["num_days"], r.data["total_amount"], r.data["balance"]),
+                         (str(today + datetime.timedelta(days=5)), 5, "352.70", "0.00"))
+        # room booked later -> asks first
+        self.client.post("/api/stays/", {"room": free[0]["id"], "check_in_date": str(today + datetime.timedelta(days=6)), "check_in_time": "14:00",
+            "check_out_date": str(today + datetime.timedelta(days=8)), "check_out_time": "11:00", "num_guests": 1,
+            "rate": "60", "name": "Next Guest"}, format="json")
+        r = self.client.post(f"/api/stays/{s['id']}/extend/", {"periods": 2}, format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("overlap", r.data)
+        r = self.client.post(f"/api/stays/{s['id']}/extend/", {"periods": 2, "allow_overlap": True}, format="json")
+        self.assertEqual((r.status_code, r.data["balance"]), (200, "140.00"))
+        # weekly adds weeks
+        w = self.client.post("/api/stays/", {"room": free[1]["id"], "check_in_date": str(today), "check_in_time": "14:00",
+            "check_out_date": str(today + datetime.timedelta(days=7)), "check_out_time": "11:00", "num_guests": 1,
+            "rate_type": "WEEKLY", "periods": 1, "rate": "300", "name": "Weekly"}, format="json").data
+        r = self.client.post(f"/api/stays/{w['id']}/extend/", {"periods": 1}, format="json")
+        self.assertEqual((r.data["periods"], r.data["num_days"], r.data["total_amount"]), (2, 14, "600.00"))
+        self.assertEqual(self.client.post(f"/api/stays/{w['id']}/extend/", {"periods": 0}, format="json").status_code, 400)
+
+
+class PaginationAndHistoryTests(APITestCase):
+    def setUp(self):
+        seed()
+        r = self.client.post("/api/auth/login/", {"username": "clerk", "password": "clerk123"}, format="json")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+        self.today = timezone.localdate()
+
+    def test_pages(self):
+        room = next(x for x in self.client.get("/api/rooms/board/").data if not x["occupied"])
+        for i in range(8):
+            self.client.post("/api/stays/", {"room": room["id"], "check_in_date": str(self.today - datetime.timedelta(days=20 + 2 * i)),
+                "check_in_time": "14:00", "check_out_date": str(self.today - datetime.timedelta(days=19 + 2 * i)), "check_out_time": "11:00",
+                "num_guests": 1, "rate": "50", "name": f"Old {i}", "cash": "10" if i % 2 else "50", "allow_overlap": True}, format="json")
+        total = len(self.client.get("/api/stays/").data)
+        r = self.client.get("/api/stays/?page=1&page_size=5").data
+        self.assertEqual((r["count"], r["page"], len(r["results"])), (total, 1, min(5, total)))
+        self.assertEqual(r["pages"], (total + 4) // 5)
+        last = self.client.get(f"/api/stays/?page=999&page_size=5").data
+        self.assertEqual(last["page"], r["pages"])
+        if r["pages"] > 1:
+            ids = [x["id"] for x in r["results"]] + [x["id"] for x in self.client.get("/api/stays/?page=2&page_size=5").data["results"]]
+            self.assertEqual(len(ids), len(set(ids)))  # no repeats across pages
+        self.assertGreater(total, 5)
+        b = self.client.get("/api/stays/?page=1&page_size=5&has_balance=1").data
+        self.assertTrue(all(float(x["balance"]) > 0 for x in b["results"]))
+        self.assertAlmostEqual(float(b["owed"]), sum(float(x["balance"]) for x in self.client.get("/api/stays/?has_balance=1").data), places=2)
+
+    def test_payment_history(self):
+        room = next(x for x in self.client.get("/api/rooms/board/").data if not x["occupied"])
+        s = self.client.post("/api/stays/", {"room": room["id"], "check_in_date": str(self.today), "check_in_time": "14:00",
+            "check_out_date": str(self.today + datetime.timedelta(days=2)), "check_out_time": "11:00", "num_guests": 1,
+            "rate": "50", "name": "History Harry", "phone": "555-1212", "cash": "30"}, format="json").data
+        self.client.post(f"/api/stays/{s['id']}/payments/", {"cash": "0", "credit": "70"}, format="json")
+        self.assertEqual(self.client.get("/api/reports/payment-history/").status_code, 400)
+        r = self.client.get("/api/reports/payment-history/?name=harry").data
+        self.assertEqual(r["count"], 1)
+        row = r["rows"][0]
+        self.assertEqual((row["guest"]["phone"], row["paid"], row["balance"], len(row["payments"])), ("555-1212", "100.00", "0.00", 2))
+        self.assertEqual([x["type"] for x in row["payments"]], ["Check-in", "Balance payment"])
+        r = self.client.get(f"/api/reports/payment-history/?room={room['number']}&start={self.today}&end={self.today}").data
+        self.assertTrue(any(x["id"] == s["id"] for x in r["rows"]))
+        r = self.client.get(f"/api/reports/payment-history/?room={room['number']}&start={self.today + datetime.timedelta(days=5)}").data
+        self.assertFalse(any(x["id"] == s["id"] for x in r["rows"]))

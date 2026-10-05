@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { errorText } from '../api'
 import { useAuth } from '../auth'
 import { Alert } from '../components/ui'
+import { APP_VERSION } from '../version'
 
 export default function Login() {
   const { login } = useAuth()
@@ -43,6 +44,7 @@ export default function Login() {
           <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required autoComplete="current-password" />
         </label>
         <button className="btn btn-primary btn-block" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
+        <div className="login-ver">Version {APP_VERSION}</div>
       </form>
     </div>
   )

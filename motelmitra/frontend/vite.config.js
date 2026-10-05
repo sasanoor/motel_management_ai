@@ -4,6 +4,9 @@ import { defineConfig } from 'vite'
 // During development, /api calls are forwarded to Django on port 8000.
 export default defineConfig({
   plugins: [react()],
+  // APP_VERSION comes from the .env next to start_app.bat (the server reads the same file)
+  envDir: '..',
+  envPrefix: ['VITE_', 'APP_'],
   server: {
     port: 5173,
     proxy: {

@@ -13,9 +13,14 @@ Motel management system. Django REST + MySQL backend, React (Vite) frontend.
 | Extra charges | Pets (per pet, per stay), extra persons (per person, per night above included guests) card fee (% of card amount) and late fee (one click "Apply late fee", or offered at checkout when the guest is past checkout time). Defaults set in Charges & Fees, clerk can override at check-in. "Put balance on card" works out the card amount including the fee |
 | Do Not Rent | DNR List menu to add past customers directly (name, phone, plate, reason). Check-in has a Check DNR list button and checks automatically before saving; phone matches in any format, plate ignores spaces/dashes. Clerk decides. Returning guests autofill |
 | Early checkout & refunds | Checking out before the booked date opens an early checkout: pick the leaving date (same day = 1 night) and how to charge: nights used × daily rate (capped at the original charge), pro-rata (weekly / monthly), no refund, or a custom amount. Extra person fee is cut to the nights used; pet, card, late fees and discounts are kept. Shows new total, refund due or balance still owed; refund full or part, by cash or card. Room is free right away. Undo restores the booking (refund stays on record). Guests who overpaid get a Refund button. Refunds show as negative rows in Collections and Today's Report |
+| Night Audit (business day) | "Today" in the app is the business day, shown in the sidebar. It changes on its own at the day change time (default 11:00 AM, set by the admin on the Night Audit page), or right away when the front desk runs Night Audit (Close day). Closing saves the day's totals; the admin can reopen the last closed day. Every payment is counted on the business day it was taken |
+| Room sheet money | Cash and Credit columns show money taken on the sheet's date. Payments from earlier days show as Paid / Part paid, so nothing is counted twice. Totals row at the bottom: Total = check-ins on that date |
+| Add stay | Room sheet and guest page: guest stays longer (pays in advance). Pick extra nights / weeks / months at the same rate, new checkout shown, take cash / card now. Same entry; asks first if the room is booked later |
 | Balance payments | List of guests who owe money. Each payment adds to previous ones and rolls into the original check-in date report |
 | Delete / recover | Client admin soft-deletes guests; separate "Deleted Guests" menu to recover |
-| Reports | Daily check-ins, collections (cash vs credit), outstanding balances, occupancy. CSV export and print |
+| Reports | Daily check-ins, collections (cash vs credit), outstanding balances, occupancy, payment history (by room, dates and / or guest name: guest details and every payment and refund). CSV export and print |
+| Guests list | Paged (25 / 50 / 100 per page) so large databases stay fast; Balance Payments too |
+| Version | `APP_VERSION` in the `.env` next to start_app.bat; shown on the login page and at the bottom of the menu |
 | Multi-tenant | Every motel only sees its own data |
 | v2 ready | `Guest.license_card` field already exists for license card upload |
 
@@ -136,7 +141,17 @@ python manage.py test motel
 | `DELETE /api/stays/{id}/`, `/api/stays/deleted/`, `/{id}/restore/` | Client admin |
 | `/api/guests/` (+ `/check/?phone=&plate=`) | Staff |
 | `/api/dashboard/?date=` | Staff |
+| `/api/business-day/` (+ `preview/`, `close/`, `history/`, `reopen/` admin) | Staff (maintenance can read) |
 | `/api/reports/checkins|collections|occupancy/?start=&end=`, `/api/reports/outstanding/` | Staff, super admin with `?client=` |
+
+## Updating to a new version
+
+1. Copy the new files over the old folder (keep `backend\.env` and your database).
+2. Double-click **start_app.bat**. If the old version is still running it is restarted automatically and database updates are applied.
+
+The version number is in the `.env` file next to start_app.bat (APP_VERSION). Database settings stay in `backend\.env`.
+
+If the screens ever show a red "server is still running the old version" bar, run **stop_app.bat** then **start_app.bat**.
 
 ## Going live (short version)
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import api, { errorText } from '../api'
 import { useAuth } from '../auth'
 import { Alert, BalanceCell, Empty, PageHead, Stat } from '../components/ui'
@@ -9,7 +9,8 @@ import { addDays, fmtDate, fmtDateTime, fmtTime, money, num, todayISO, rateTypeI
 export default function TodayReport() {
   const { user } = useAuth()
   const navigate = useNavigate()
-  const [date, setDate] = useState(todayISO())
+  const [params] = useSearchParams()
+  const [date, setDate] = useState(params.get('date') || todayISO())
   const [mine, setMine] = useState(false)
   const [result, setResult] = useState(null) // { key, data }
   const [err, setErr] = useState('')
@@ -98,7 +99,7 @@ export default function TodayReport() {
             {!d.checkins.length ? <Empty>No check-ins.</Empty> : (
               <div className="table-wrap">
                 <table className="table">
-                  <thead><tr><th>Time</th><th>Room</th><th>Guest</th><th className="num">Guests</th><th className="num">Nights</th><th>Checkout</th><th className="num">Rate</th><th className="num">Total</th><th className="num">Cash</th><th className="num">Credit</th><th className="num">Balance</th><th>Clerk</th></tr></thead>
+                  <thead><tr><th>Time</th><th>Room</th><th>Guest</th><th className="num">Guests</th><th className="num">Nights</th><th>Checkout</th><th className="num">Rate</th><th className="num">Total</th><th className="num">Cash</th><th className="num">Credit</th><th className="num">Other days</th><th className="num">Balance</th><th>Clerk</th></tr></thead>
                   <tbody>
                     {d.checkins.map((r) => (
                       <tr key={r.id} className="clickable" onClick={() => open(r.id)}>
@@ -112,13 +113,21 @@ export default function TodayReport() {
                         <td className="num">{money(r.total)}</td>
                         <td className="num">{money(r.cash)}</td>
                         <td className="num">{money(r.credit)}</td>
+                        <td className="num">
+                          {num(r.paid_other_days) ? <span className="muted" title="Taken on another day; counted on that day">{money(r.paid_other_days)}</span> : <span className="muted">—</span>}
+                          {num(r.balance) <= 0 && <div><span className="pill pill-green">Paid</span></div>}
+                        </td>
                         <td className="num"><BalanceCell value={r.balance} /></td>
                         <td>{r.clerk}</td>
                       </tr>
                     ))}
                   </tbody>
                   <tfoot>
-                    <tr><td colSpan={7}>Total</td><td className="num">{money(d.money.booked)}</td><td colSpan={4}></td></tr>
+                    <tr><td colSpan={7}>Total</td><td className="num">{money(d.money.booked)}</td>
+                      <td className="num">{money(d.checkins.reduce((a, r) => a + num(r.cash), 0))}</td>
+                      <td className="num">{money(d.checkins.reduce((a, r) => a + num(r.credit), 0))}</td>
+                      <td className="num muted">{money(d.checkins.reduce((a, r) => a + num(r.paid_other_days), 0))}</td>
+                      <td colSpan={2}></td></tr>
                   </tfoot>
                 </table>
               </div>

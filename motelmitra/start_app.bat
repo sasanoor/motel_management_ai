@@ -51,14 +51,28 @@ if "%LAN%"=="1" (
   set "CORS_ALLOWED_ORIGINS=http://localhost:%FRONT_PORT%,http://127.0.0.1:%FRONT_PORT%"
 )
 
-REM ---------- already running?
-powershell -NoProfile -Command "try{Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 http://localhost:%FRONT_PORT% | Out-Null; exit 0}catch{exit 1}"
-if not errorlevel 1 (
-  call :log "MotelMitra is already running."
-  call :links
-  start "" http://localhost:%FRONT_PORT%
-  goto :done
-)
+REM ---------- already running? Keep it only if the running server is this version.
+REM            After an update (new files copied in) it is restarted so new code and database changes load.
+set "APPVER=dev"
+if exist "%ROOT%.env" for /f "tokens=2 delims==" %%v in ('findstr /b /c:"APP_VERSION=" "%ROOT%.env"') do set "APPVER=%%v"
+powershell -NoProfile -Command "try{Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 http://127.0.0.1:%FRONT_PORT% | Out-Null; exit 0}catch{exit 1}"
+if errorlevel 1 goto :not_running
+powershell -NoProfile -Command "try{$v=(Invoke-RestMethod -TimeoutSec 3 http://127.0.0.1:%BACK_PORT%/api/version/).version; if($v -eq '%APPVER%'){exit 0}else{exit 1}}catch{exit 1}"
+if errorlevel 1 goto :restart
+call :log "MotelMitra is already running (version %APPVER%)."
+call :links
+start "" http://localhost:%FRONT_PORT%
+goto :done
+
+:restart
+call :log "Update found: restarting MotelMitra to load version %APPVER%..."
+taskkill /FI "WINDOWTITLE eq MotelMitra Backend*" /T /F >nul 2>&1
+taskkill /FI "WINDOWTITLE eq MotelMitra Frontend*" /T /F >nul 2>&1
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr LISTENING ^| findstr /C:":%BACK_PORT% " /C:":%FRONT_PORT% "') do taskkill /PID %%p /T /F >nul 2>&1
+timeout /t 3 >nul
+
+:not_running
+call :log "Version: %APPVER%"
 
 REM ---------- find Python
 set "PY="
@@ -119,6 +133,12 @@ if "%LAN%"=="1" call :firewall
 REM ---------- delete logs older than 30 days
 forfiles /p "%ROOT%logs" /m *.txt /d -30 /c "cmd /c del @path" >nul 2>&1
 
+REM ---------- free the two ports if a leftover process still holds them
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr LISTENING ^| findstr /C:":%BACK_PORT% " /C:":%FRONT_PORT% "') do (
+  call :log "Port in use by old process %%p, closing it."
+  taskkill /PID %%p /T /F >nul 2>&1
+)
+
 REM ---------- start servers in their own minimised windows
 call :log "Starting backend on %BIND%:%BACK_PORT%, log file: logs\backend_%D%.txt"
 start "MotelMitra Backend" /min cmd /c ""%ROOT%scripts\run_backend.bat" %PY% %D% %BIND% %BACK_PORT%"
@@ -128,9 +148,17 @@ start "MotelMitra Frontend" /min cmd /c ""%ROOT%scripts\run_frontend.bat" %BIND%
 REM ---------- wait until both answer on localhost
 call :log "Waiting for the app to come up..."
 powershell -NoProfile -Command "for($i=0;$i -lt 40;$i++){try{Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 http://127.0.0.1:%BACK_PORT%/api/auth/me/ | Out-Null; exit 0}catch{if($_.Exception.Response){exit 0}; Start-Sleep 1}}; exit 1"
-if errorlevel 1 ( call :log "ERROR: Backend did not start. Open logs\backend_%D%.txt" & goto :fail )
-powershell -NoProfile -Command "for($i=0;$i -lt 40;$i++){try{Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 http://localhost:%FRONT_PORT% | Out-Null; exit 0}catch{Start-Sleep 1}}; exit 1"
-if errorlevel 1 ( call :log "ERROR: Frontend did not start. Open logs\frontend_%D%.txt" & goto :fail )
+if errorlevel 1 (
+  call :log "ERROR: Backend did not start. Last lines of logs\backend_%D%.txt:"
+  call :tail "%ROOT%logs\backend_%D%.txt"
+  goto :fail
+)
+powershell -NoProfile -Command "for($i=0;$i -lt 40;$i++){try{Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 http://127.0.0.1:%FRONT_PORT% | Out-Null; exit 0}catch{Start-Sleep 1}}; exit 1"
+if errorlevel 1 (
+  call :log "ERROR: Frontend did not start. Last lines of logs\frontend_%D%.txt:"
+  call :tail "%ROOT%logs\frontend_%D%.txt"
+  goto :fail
+)
 
 REM ---------- confirm it also answers on the WiFi address
 if "%LAN%"=="1" (
@@ -178,6 +206,12 @@ if "%LAN%"=="1" >> "%ROOT%app_links.txt" echo WiFi devices:     http://%IP%:%FRO
 if "%LAN%"=="1" >> "%ROOT%app_links.txt" echo Django admin:     http://%IP%:%BACK_PORT%/admin/
 >> "%ROOT%app_links.txt" echo.
 >> "%ROOT%app_links.txt" echo The WiFi address can change if the router restarts. Start the app again to refresh it.
+exit /b 0
+
+:tail
+REM show the last 25 lines of a log in this window and copy them into the launcher log
+powershell -NoProfile -Command "if(Test-Path '%~1'){Get-Content -Tail 25 '%~1'}else{'(log file not found)'}"
+powershell -NoProfile -Command "if(Test-Path '%~1'){Get-Content -Tail 25 '%~1'}" >> "%LOG%" 2>&1
 exit /b 0
 
 :firewall
