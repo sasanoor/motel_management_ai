@@ -16,10 +16,10 @@ from accounts.permissions import (
 )
 
 from . import business, early
-from .models import DayClose, Guest, Note, Payment, Room, RoomType, Stay
+from .models import DayClose, Expense, Guest, Note, Payment, Room, RoomType, Stay
 from .serializers import (
-    GuestSerializer, NoteSerializer, PaymentSerializer, RoomSerializer, RoomTypeSerializer,
-    StaySerializer, StayWriteSerializer,
+    ExpenseSerializer, GuestSerializer, NoteSerializer, PaymentSerializer, RoomSerializer, RoomTypeSerializer,
+    StaySerializer, StayWriteSerializer, expense_editable,
 )
 
 ZERO = Decimal("0.00")
@@ -892,6 +892,14 @@ def report_today(request):
     from_checkins = sum((p.amount for p in pays if p.stay.check_in_date == day), ZERO)
     refunds = sum((-p.amount for p in pays if p.kind == Payment.REFUND), ZERO)
 
+    # expenses paid out on this business day (cash ones come out of the drawer)
+    exps = list(Expense.objects.filter(client=client, business_date=day, is_deleted=False)
+                .select_related("clerk", "client").order_by("created_at"))
+    if mine:
+        exps = [e for e in exps if e.clerk_id == request.user.id]
+    exp_cash = sum((e.amount for e in exps if e.method == Expense.CASH), ZERO)
+    exp_card = sum((e.amount for e in exps if e.method == Expense.CREDIT), ZERO)
+
     by_clerk = {}
     for p in pays:
         row = by_clerk.setdefault(clerk_name(p.clerk) or "Unknown", {"cash": ZERO, "credit": ZERO, "count": 0})
@@ -939,6 +947,11 @@ def report_today(request):
             "collected": str(cash + credit),
             "refunds": str(refunds),
             "received": str(cash + credit + refunds),
+            "expenses_cash": str(exp_cash),
+            "expenses_card": str(exp_card),
+            "expenses": str(exp_cash + exp_card),
+            "cash_in_drawer": str(cash - exp_cash),
+            "net": str(cash + credit - exp_cash - exp_card),
             "from_todays_checkins": str(from_checkins),
             "from_earlier_stays": str(cash + credit - from_checkins),
             "unpaid_from_todays_checkins": str(owed),
@@ -954,6 +967,7 @@ def report_today(request):
             "check_in_date": s.check_in_date, "total": str(s.total_amount),
             "balance": str(s.total_amount - paid(s)), "status": s.status,
         } for s in checkouts],
+        "expenses": ExpenseSerializer(exps, many=True, context={"request": request}).data,
         "payments": [{
             "id": p.id, "paid_at": p.paid_at, "business_date": p.business_date, "method": p.method, "amount": str(p.amount),
             "type": pay_type(p),
@@ -964,6 +978,42 @@ def report_today(request):
 
 
 # ------------------------------------------------------------------ maintenance
+class ExpenseViewSet(viewsets.ModelViewSet):
+    """
+    Expenses paid by the front desk (shown in Today's Report > Cash drawer).
+    ?date=YYYY-MM-DD filters by business day. Delete keeps the record (is_deleted).
+    """
+
+    permission_classes = [IsClientStaff]
+    serializer_class = ExpenseSerializer
+
+    def get_queryset(self):
+        qs = Expense.objects.filter(client=self.request.user.client, is_deleted=False).select_related("clerk", "client")
+        if self.request.query_params.get("date"):
+            qs = qs.filter(business_date=parse_date(self.request.query_params["date"]))
+        return qs
+
+    def perform_create(self, serializer):
+        client = self.request.user.client
+        day = serializer.validated_data.get("business_date") or business.business_date(client)
+        serializer.save(client=client, clerk=self.request.user, business_date=day)
+
+    def _check(self, exp):
+        if not expense_editable(exp, self.request.user):
+            raise PermissionDenied("You can only change your own expenses on the current business day. Ask the admin.")
+
+    def perform_update(self, serializer):
+        self._check(serializer.instance)
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        self._check(instance)
+        instance.is_deleted = True
+        instance.deleted_at = timezone.now()
+        instance.deleted_by = self.request.user
+        instance.save()
+
+
 class NoteViewSet(viewsets.ModelViewSet):
     """
     Maintenance notes, written by front desk staff (client admin / client user).

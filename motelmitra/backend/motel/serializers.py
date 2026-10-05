@@ -4,7 +4,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
 
-from .models import Guest, Note, Payment, Room, RoomType, Stay, join_name, split_name
+from .models import Expense, Guest, Note, Payment, Room, RoomType, Stay, join_name, split_name
 
 ZERO = Decimal("0.00")
 
@@ -397,3 +397,52 @@ class NoteSerializer(serializers.ModelSerializer):
         if not value.strip():
             raise serializers.ValidationError("Note cannot be empty.")
         return value.strip()
+
+
+class ExpenseSerializer(serializers.ModelSerializer):
+    clerk_name = serializers.SerializerMethodField()
+    can_edit = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Expense
+        fields = ["id", "business_date", "amount", "method", "description", "clerk", "clerk_name", "created_at", "can_edit"]
+        read_only_fields = ["clerk", "created_at"]
+        extra_kwargs = {"business_date": {"required": False}}
+
+    def get_clerk_name(self, obj):
+        return (obj.clerk.get_full_name() or obj.clerk.username) if obj.clerk else ""
+
+    def get_can_edit(self, obj):
+        request = self.context.get("request")
+        return bool(request and expense_editable(obj, request.user))
+
+    def validate_amount(self, v):
+        if v <= 0:
+            raise serializers.ValidationError("Amount must be greater than zero.")
+        return v
+
+    def validate_description(self, v):
+        if not v.strip():
+            raise serializers.ValidationError("Enter what the money was spent on.")
+        return v.strip()
+
+    def validate_business_date(self, v):
+        from django.utils import timezone as tz
+        from . import business
+        client = self.context["request"].user.client
+        from accounts.models import User
+        biz = business.business_date(client)
+        if v > max(tz.localdate(), biz):
+            raise serializers.ValidationError("Date cannot be in the future.")
+        if self.context["request"].user.role != User.CLIENT_ADMIN and v != biz:
+            raise serializers.ValidationError("Only the admin can add an expense for another day.")
+        return v
+
+
+def expense_editable(expense, user):
+    """Client admin: any expense. Front desk: only their own, on the current business day."""
+    from accounts.models import User
+    from . import business
+    if user.role == User.CLIENT_ADMIN:
+        return True
+    return expense.clerk_id == user.id and expense.business_date == business.business_date(expense.client)

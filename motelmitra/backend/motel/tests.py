@@ -638,3 +638,41 @@ class NamePartsTests(APITestCase):
         r = self.client.patch(f"/api/guests/{r.data['id']}/", {"middle_name": "X"}, format="json")
         self.assertEqual(r.data["name"], "Bad X Actor")
         self.assertEqual(self.client.post("/api/guests/", {"first_name": "", "do_not_rent": True}, format="json").status_code, 400)
+
+
+class ExpenseTests(APITestCase):
+    def test_expenses_in_cash_drawer(self):
+        seed()
+        def login(u, p):
+            r = self.client.post("/api/auth/login/", {"username": u, "password": p}, format="json")
+            self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+        login("clerk", "clerk123")
+        today = timezone.localdate()
+        before = self.client.get(f"/api/reports/today/?date={today}").data["money"]
+        r = self.client.post("/api/expenses/", {"amount": "25.50", "method": "CASH", "description": "Bleach and towels"}, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual((r.data["business_date"], r.data["clerk_name"] != "", r.data["can_edit"]), (str(today), True, True))
+        self.client.post("/api/expenses/", {"amount": "40", "method": "CREDIT", "description": "Plumber"}, format="json")
+        # validation
+        self.assertEqual(self.client.post("/api/expenses/", {"amount": "0", "method": "CASH", "description": "x"}, format="json").status_code, 400)
+        self.assertEqual(self.client.post("/api/expenses/", {"amount": "5", "method": "CASH", "description": " "}, format="json").status_code, 400)
+        future = str(today + datetime.timedelta(days=3))
+        self.assertEqual(self.client.post("/api/expenses/", {"amount": "5", "method": "CASH", "description": "x", "business_date": future}, format="json").status_code, 400)
+        m = self.client.get(f"/api/reports/today/?date={today}").data
+        self.assertEqual((m["money"]["expenses_cash"], m["money"]["expenses_card"], m["money"]["expenses"]), ("25.50", "40.00", "65.50"))
+        self.assertAlmostEqual(float(m["money"]["cash_in_drawer"]), float(before["cash"]) - 25.5, places=2)
+        self.assertEqual(len(m["expenses"]), 2)
+        # an older expense: clerk cannot change it, admin can; delete keeps the record
+        two_ago = str(today - datetime.timedelta(days=2))
+        self.assertEqual(self.client.post("/api/expenses/", {"amount": "9", "method": "CASH", "description": "Old", "business_date": two_ago}, format="json").status_code, 400)
+        login("owner", "owner123")
+        old = self.client.post("/api/expenses/", {"amount": "9", "method": "CASH", "description": "Old", "business_date": two_ago}, format="json").data
+        login("clerk", "clerk123")
+        self.assertFalse(self.client.get(f"/api/expenses/?date={two_ago}").data[0]["can_edit"])
+        self.assertEqual(self.client.delete(f"/api/expenses/{old['id']}/").status_code, 403)
+        self.assertEqual(self.client.delete(f"/api/expenses/{r.data['id']}/").status_code, 204)
+        from motel.models import Expense
+        self.assertTrue(Expense.objects.get(pk=r.data["id"]).is_deleted)
+        login("owner", "owner123")
+        self.assertEqual(self.client.patch(f"/api/expenses/{old['id']}/", {"amount": "10"}, format="json").status_code, 200)
+        self.assertEqual(self.client.get(f"/api/reports/today/?date={today}").data["money"]["expenses"], "40.00")

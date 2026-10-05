@@ -16,6 +16,7 @@ router.register("rooms", mv.RoomViewSet, basename="room")
 router.register("guests", mv.GuestViewSet, basename="guest")
 router.register("stays", mv.StayViewSet, basename="stay")
 router.register("notes", mv.NoteViewSet, basename="note")
+router.register("expenses", mv.ExpenseViewSet, basename="expense")
 
 urlpatterns = [
     path("admin/", admin.site.urls),

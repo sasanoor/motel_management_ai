@@ -304,3 +304,28 @@ class DayClose(models.Model):
 
     def __str__(self):
         return f"{self.client} closed {self.date}"
+
+
+class Expense(models.Model):
+    """Money paid out by the front desk (supplies, repairs ...). Counted on its business day."""
+
+    CASH = "CASH"
+    CREDIT = "CREDIT"
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="expenses")
+    business_date = models.DateField(db_index=True)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    method = models.CharField(max_length=10, choices=[(CASH, "Cash"), (CREDIT, "Card")], default=CASH)
+    description = models.CharField(max_length=255)
+    clerk = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="expenses")
+    created_at = models.DateTimeField(auto_now_add=True)
+    # deleted expenses are kept for the record
+    is_deleted = models.BooleanField(default=False)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                   related_name="expenses_deleted")
+
+    class Meta:
+        ordering = ["business_date", "created_at"]
+
+    def __str__(self):
+        return f"{self.business_date} {self.method} {self.amount} {self.description}"

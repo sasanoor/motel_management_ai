@@ -433,3 +433,7 @@ input.input-owed { color: var(--red); font-weight: 700; }
 .req { color: var(--red); font-weight: 700; }
 .name-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
 @media (max-width: 640px) { .name-row { grid-template-columns: 1fr; } }
+.section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.section-head .section-title { margin-bottom: 10px; }
+.drawer-note { margin: -6px 0 12px; }
+.expense-card { margin-bottom: 8px; }
