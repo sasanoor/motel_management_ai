@@ -6,7 +6,7 @@ import RoomPicker from '../components/RoomPicker'
 import { Alert, Modal, PageHead } from '../components/ui'
 import {
   RATE_TYPES, addDays, addMonths, daysBetween, fmtDate, money, monthsBetween, nowTime, num, periodText,
-  rateFor, rateTypeInfo, todayISO,
+  fullName, nameParts, rateFor, rateTypeInfo, todayISO,
 } from '../utils'
 
 const blank = (room = '', date = todayISO()) => ({
@@ -19,7 +19,7 @@ const blank = (room = '', date = todayISO()) => ({
   rate_type: 'DAILY',
   periods: 1,          // weeks or months when renting weekly / monthly
   rate: '',
-  name: '', address: '', city: '', state: '', zip_code: '',
+  first_name: '', middle_name: '', last_name: '', address: '', city: '', state: '', zip_code: '',
   phone: '', car: '', license_plate: '',
   do_not_rent: false,
   cash: '', credit: '',
@@ -82,7 +82,7 @@ export default function CheckIn() {
         rate_type: s.rate_type || 'DAILY', periods: s.periods || 1,
         pets: s.pets || 0, extra_persons: s.extra_persons ?? 0, pet_fee: num(s.pet_fee),
         extra_person_fee: num(s.extra_person_fee), card_fee: num(s.card_fee), late_fee: num(s.late_fee),
-        name: s.guest.name, address: s.guest.address, city: s.guest.city, state: s.guest.state,
+        ...nameParts(s.guest), address: s.guest.address, city: s.guest.city, state: s.guest.state,
         zip_code: s.guest.zip_code, phone: s.guest.phone, car: s.guest.car,
         license_plate: s.guest.license_plate, do_not_rent: s.guest.do_not_rent, guest_id: s.guest.id,
       })
@@ -104,7 +104,7 @@ export default function CheckIn() {
         ...blank(String(s.room), start),
         check_out_date: end, check_out_time: s.check_out_time.slice(0, 5),
         rate_type: type, periods: n, rate: s.rate, num_guests: s.num_guests, pets: s.pets || 0,
-        name: s.guest.name, address: s.guest.address, city: s.guest.city, state: s.guest.state,
+        ...nameParts(s.guest), address: s.guest.address, city: s.guest.city, state: s.guest.state,
         zip_code: s.guest.zip_code, phone: s.guest.phone, car: s.guest.car,
         license_plate: s.guest.license_plate, do_not_rent: s.guest.do_not_rent, guest_id: s.guest.id,
       })
@@ -230,24 +230,25 @@ export default function CheckIn() {
   function useMatch() {
     const g = match
     setF((p) => ({
-      ...p, guest_id: g.id, name: g.name, address: g.address, city: g.city, state: g.state,
+      ...p, guest_id: g.id, ...nameParts(g), address: g.address, city: g.city, state: g.state,
       zip_code: g.zip_code, phone: g.phone, car: g.car, license_plate: g.license_plate, do_not_rent: g.do_not_rent,
     }))
     setMatch(null)
   }
 
   // ---- Do Not Rent check (name / phone / plate against the DNR list)
-  const dnrKey = `${f.name.trim().toLowerCase()}|${f.phone.trim()}|${f.license_plate.trim().toLowerCase()}`
+  const guestName = fullName(f)
+  const dnrKey = `${guestName.toLowerCase()}|${f.phone.trim()}|${f.license_plate.trim().toLowerCase()}`
   const dnrFresh = dnrResult && dnrResult.key === dnrKey
 
   async function checkDnr() {
-    if (!f.name.trim() && !f.phone.trim() && !f.license_plate.trim()) {
+    if (!guestName && !f.phone.trim() && !f.license_plate.trim()) {
       setDnrResult({ key: dnrKey, checked: [], matches: [], empty: true })
       return null
     }
     setDnrBusy(true)
     try {
-      const { data } = await api.get('/guests/dnr_check/', { params: { name: f.name, phone: f.phone, plate: f.license_plate } })
+      const { data } = await api.get('/guests/dnr_check/', { params: { name: guestName, phone: f.phone, plate: f.license_plate } })
       const res = { key: dnrKey, ...data }
       setDnrResult(res)
       return res
@@ -263,7 +264,7 @@ export default function CheckIn() {
     e?.preventDefault()
     if (!f.room) return setErr('Select a room.')
     if (f.do_not_rent && !dnrAck) {
-      setDnrHit({ name: f.name, phone: f.phone, license_plate: f.license_plate, self: true })
+      setDnrHit({ name: guestName, phone: f.phone, license_plate: f.license_plate, self: true })
       return
     }
     // always check the DNR list before saving a new check-in
@@ -397,8 +398,14 @@ export default function CheckIn() {
             )
           )}
           <div className="form-grid cols-4">
-            <label className="span-2">Name
-              <input value={f.name} onChange={set('name')} required />
+            <label><span>First name <span className="req">*</span></span>
+              <input value={f.first_name} onChange={set('first_name')} required autoComplete="off" />
+            </label>
+            <label>Middle name
+              <input value={f.middle_name} onChange={set('middle_name')} autoComplete="off" />
+            </label>
+            <label><span>Last name <span className="req">*</span></span>
+              <input value={f.last_name} onChange={set('last_name')} required autoComplete="off" />
             </label>
             <label>Phone number
               <input value={f.phone} onChange={set('phone')} onBlur={lookup} inputMode="tel" />
@@ -551,7 +558,7 @@ export default function CheckIn() {
       {overlap && (
         <Modal title="Room already rented" onClose={() => setOverlap(null)}>
           <div className="alert alert-info">{overlap}</div>
-          <p>Rent this room to <strong>{f.name || 'this guest'}</strong> as well?</p>
+          <p>Rent this room to <strong>{guestName || 'this guest'}</strong> as well?</p>
           <div className="form-actions">
             <button className="btn" onClick={() => setOverlap(null)}>Pick another room</button>
             <button className="btn btn-primary" onClick={() => { setOverlap(null); submit(null, true) }}>Yes, rent again</button>

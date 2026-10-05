@@ -116,3 +116,16 @@ export function dayOfStay(stay, refDate = todayISO()) {
   const n = daysBetween(stay.check_in_date, refDate) + 1
   return n >= 1 ? n : null
 }
+
+// Guest name parts: { first_name, middle_name, last_name } (older records only had a full name)
+export function nameParts(g = {}) {
+  if (g.first_name || g.last_name || g.middle_name) {
+    return { first_name: g.first_name || '', middle_name: g.middle_name || '', last_name: g.last_name || '' }
+  }
+  const w = (g.name || '').trim().split(/\s+/).filter(Boolean)
+  if (!w.length) return { first_name: '', middle_name: '', last_name: '' }
+  if (w.length === 1) return { first_name: w[0], middle_name: '', last_name: '' }
+  return { first_name: w[0], middle_name: w.slice(1, -1).join(' '), last_name: w[w.length - 1] }
+}
+
+export const fullName = (p) => [p.first_name, p.middle_name, p.last_name].map((x) => (x || '').trim()).filter(Boolean).join(' ')

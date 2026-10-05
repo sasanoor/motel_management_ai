@@ -47,7 +47,11 @@ class Guest(models.Model):
     """A person. One guest can have many stays (repeat visits)."""
 
     client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="guests")
-    name = models.CharField(max_length=150)
+    # Full name, kept in step with the parts below (search, lists and reports use it)
+    name = models.CharField(max_length=150, blank=True)
+    first_name = models.CharField(max_length=60, blank=True)
+    middle_name = models.CharField(max_length=60, blank=True)
+    last_name = models.CharField(max_length=60, blank=True)
     address = models.CharField(max_length=255, blank=True)
     city = models.CharField(max_length=100, blank=True)
     state = models.CharField(max_length=50, blank=True)
@@ -71,6 +75,14 @@ class Guest(models.Model):
 
     def save(self, *args, **kwargs):
         from django.utils import timezone
+        # name parts win; an old-style full name only is split into parts
+        parts = [x.strip() for x in (self.first_name, self.middle_name, self.last_name)]
+        if any(parts):
+            self.first_name, self.middle_name, self.last_name = parts
+            self.name = join_name(*parts)
+        elif self.name:
+            self.name = " ".join(self.name.split())
+            self.first_name, self.middle_name, self.last_name = split_name(self.name)
         if self.do_not_rent and not self.dnr_marked_at:
             self.dnr_marked_at = timezone.now()
         if not self.do_not_rent:
@@ -80,6 +92,20 @@ class Guest(models.Model):
 
     def __str__(self):
         return self.name
+
+
+def split_name(full):
+    """'John Q Public' -> ('John', 'Q', 'Public'); 'Cher' -> ('Cher', '', '')."""
+    words = (full or "").split()
+    if not words:
+        return "", "", ""
+    if len(words) == 1:
+        return words[0], "", ""
+    return words[0], " ".join(words[1:-1]), words[-1]
+
+
+def join_name(first, middle, last):
+    return " ".join(x.strip() for x in (first, middle, last) if x and x.strip())
 
 
 def months_between(start, end):

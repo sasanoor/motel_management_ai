@@ -2,7 +2,10 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import api, { errorText } from '../api'
 import { useAuth } from '../auth'
-import { Alert, BalanceCell, Empty, PageHead, Stat } from '../components/ui'
+import AddStayModal from '../components/AddStayModal'
+import CheckoutModal from '../components/CheckoutModal'
+import RoomSheet from '../components/RoomSheet'
+import { Alert, BalanceCell, Empty, PageHead, PaymentModal, Stat } from '../components/ui'
 import { addDays, fmtDate, fmtDateTime, fmtTime, money, num, todayISO, rateTypeInfo } from '../utils'
 
 /** End-of-day / shift handover report for the front desk. */
@@ -15,12 +18,26 @@ export default function TodayReport() {
   const [result, setResult] = useState(null) // { key, data }
   const [err, setErr] = useState('')
   const key = `${date}|${mine}`
+  // Room sheet: same component and same /dashboard/ data as Home, so both always match
+  const [sheet, setSheet] = useState(null)   // { date, data }
+  const [tick, setTick] = useState(0)        // bump to reload after a payment / checkout / add stay
+  const [paying, setPaying] = useState(null)
+  const [checkingOut, setCheckingOut] = useState(null)
+  const [adding, setAdding] = useState(null)
+  const reload = () => setTick((t) => t + 1)
 
   useEffect(() => {
     api.get('/reports/today/', { params: { date, mine: mine ? 1 : undefined } })
       .then((r) => { setResult({ key: `${date}|${mine}`, data: r.data }); setErr('') })
       .catch((e) => setErr(errorText(e)))
-  }, [date, mine])
+  }, [date, mine, tick])
+
+  useEffect(() => {
+    api.get('/dashboard/', { params: { date } })
+      .then((r) => setSheet({ date, data: r.data }))
+      .catch(() => {})
+  }, [date, tick])
+  const sheetData = sheet?.date === date ? sheet.data : null
 
   const d = result?.key === key ? result.data : null
   const isToday = date === todayISO()
@@ -73,6 +90,14 @@ export default function TodayReport() {
             <Stat label="Occupied tonight" value={`${d.summary.occupied} / ${d.summary.total_rooms}`} />
             <Stat label="Available" value={d.summary.available} tone="good" />
             <Stat label="Occupancy" value={`${d.summary.occupancy_pct}%`} />
+          </div>
+
+          <h2 className="section-title">Room sheet{mine && <span className="tiny muted"> · all clerks</span>}</h2>
+          <div className="card no-pad report-sheet">
+            {sheetData
+              ? <RoomSheet date={date} rooms={sheetData.rooms} stays={sheetData.staying}
+                  onPay={setPaying} onCheckout={setCheckingOut} onAddStay={setAdding} />
+              : <Empty>Loading…</Empty>}
           </div>
 
           {d.by_clerk.length > 0 && (
@@ -179,6 +204,10 @@ export default function TodayReport() {
               </div>
             )}
           </div>
+
+          {paying && <PaymentModal stay={paying} onClose={() => setPaying(null)} onSaved={() => { setPaying(null); reload() }} />}
+          {checkingOut && <CheckoutModal stay={checkingOut} onClose={() => setCheckingOut(null)} onDone={reload} />}
+          {adding && <AddStayModal stay={adding} onClose={() => setAdding(null)} onSaved={() => { setAdding(null); reload() }} />}
 
           <div className="print-only signoff">
             <div>Clerk signature: ____________________</div>

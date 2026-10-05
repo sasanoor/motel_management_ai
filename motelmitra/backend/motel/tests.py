@@ -605,3 +605,36 @@ class PaginationAndHistoryTests(APITestCase):
         self.assertTrue(any(x["id"] == s["id"] for x in r["rows"]))
         r = self.client.get(f"/api/reports/payment-history/?room={room['number']}&start={self.today + datetime.timedelta(days=5)}").data
         self.assertFalse(any(x["id"] == s["id"] for x in r["rows"]))
+
+
+class NamePartsTests(APITestCase):
+    def test_first_middle_last(self):
+        seed()
+        r = self.client.post("/api/auth/login/", {"username": "clerk", "password": "clerk123"}, format="json")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+        today = timezone.localdate()
+        room = next(x for x in self.client.get("/api/rooms/board/").data if not x["occupied"])
+        base = {"room": room["id"], "check_in_date": str(today), "check_in_time": "14:00",
+                "check_out_date": str(today + datetime.timedelta(days=1)), "check_out_time": "11:00", "num_guests": 1, "rate": "50"}
+        r = self.client.post("/api/stays/", {**base, "first_name": " Mary ", "middle_name": "Ann", "last_name": "Smith"}, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        g = r.data["guest"]
+        self.assertEqual((g["name"], g["first_name"], g["middle_name"], g["last_name"]), ("Mary Ann Smith", "Mary", "Ann", "Smith"))
+        # no name at all -> refused
+        r = self.client.post("/api/stays/", {**base, "first_name": "", "last_name": "", "allow_overlap": True}, format="json")
+        self.assertEqual(r.status_code, 400)
+        # old style full name still works and is split
+        r = self.client.post("/api/stays/", {**base, "name": "John Q  Public", "allow_overlap": True}, format="json")
+        g = r.data["guest"]
+        self.assertEqual((g["name"], g["first_name"], g["middle_name"], g["last_name"]), ("John Q Public", "John", "Q", "Public"))
+        # editing the stay with new parts updates the guest name
+        r = self.client.patch(f"/api/stays/{r.data['id']}/", {"first_name": "Jon", "middle_name": "", "last_name": "Public", "allow_overlap": True}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(self.client.get(f"/api/stays/{r.data['id']}/").data["guest"]["name"], "Jon Public")
+        # DNR list uses the same parts
+        r = self.client.post("/api/guests/", {"first_name": "Bad", "last_name": "Actor", "phone": "555-9999",
+                                              "do_not_rent": True, "dnr_reason": "damage"}, format="json")
+        self.assertEqual((r.status_code, r.data["name"]), (201, "Bad Actor"))
+        r = self.client.patch(f"/api/guests/{r.data['id']}/", {"middle_name": "X"}, format="json")
+        self.assertEqual(r.data["name"], "Bad X Actor")
+        self.assertEqual(self.client.post("/api/guests/", {"first_name": "", "do_not_rent": True}, format="json").status_code, 400)

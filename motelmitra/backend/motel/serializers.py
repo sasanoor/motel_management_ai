@@ -4,7 +4,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
 
-from .models import Guest, Note, Payment, Room, RoomType, Stay
+from .models import Guest, Note, Payment, Room, RoomType, Stay, join_name, split_name
 
 ZERO = Decimal("0.00")
 
@@ -69,7 +69,7 @@ class GuestSerializer(serializers.ModelSerializer):
     class Meta:
         model = Guest
         fields = [
-            "id", "name", "address", "city", "state", "zip_code", "phone", "car",
+            "id", "name", "first_name", "middle_name", "last_name", "address", "city", "state", "zip_code", "phone", "car",
             "license_plate", "do_not_rent", "dnr_reason", "dnr_marked_at", "dnr_marked_by_name",
             "stay_count", "last_stay", "created_at",
         ]
@@ -79,10 +79,8 @@ class GuestSerializer(serializers.ModelSerializer):
         u = obj.dnr_marked_by
         return (u.get_full_name() or u.username) if u else ""
 
-    def validate_name(self, value):
-        if not value.strip():
-            raise serializers.ValidationError("Name is required.")
-        return value.strip()
+    def validate(self, attrs):
+        return clean_name_parts(attrs, self.instance)
 
     def get_stay_count(self, obj):
         return obj.stays.filter(is_deleted=False).count()
@@ -194,7 +192,27 @@ class StaySerializer(serializers.ModelSerializer):
         return str(obj.total_amount - self._sum(obj))
 
 
-GUEST_FIELDS = ["name", "address", "city", "state", "zip_code", "phone", "car", "license_plate", "do_not_rent"]
+def clean_name_parts(attrs, instance=None):
+    """
+    Guest name: first / middle / last (screens require first and last), kept with the full name.
+    An old-style full name only is split into parts. Returns attrs.
+    """
+    parts_sent = any(k in attrs for k in ("first_name", "middle_name", "last_name"))
+    if parts_sent:
+        first = (attrs.get("first_name", getattr(instance, "first_name", "")) or "").strip()
+        middle = (attrs.get("middle_name", getattr(instance, "middle_name", "")) or "").strip()
+        last = (attrs.get("last_name", getattr(instance, "last_name", "")) or "").strip()
+        attrs.update(first_name=first, middle_name=middle, last_name=last, name=join_name(first, middle, last))
+    elif "name" in attrs:
+        full = " ".join((attrs["name"] or "").split())
+        attrs["first_name"], attrs["middle_name"], attrs["last_name"] = split_name(full)
+        attrs["name"] = full
+    if ("name" in attrs or instance is None) and not attrs.get("name") and not getattr(instance, "name", ""):
+        raise serializers.ValidationError({"first_name": "Enter the guest's name."})
+    return attrs
+
+
+GUEST_FIELDS = ["name", "first_name", "middle_name", "last_name", "address", "city", "state", "zip_code", "phone", "car", "license_plate", "do_not_rent"]
 
 
 class StayWriteSerializer(serializers.ModelSerializer):
@@ -202,7 +220,10 @@ class StayWriteSerializer(serializers.ModelSerializer):
 
     # guest details (flat on the form)
     guest_id = serializers.IntegerField(required=False, allow_null=True, write_only=True)
-    name = serializers.CharField(max_length=150, write_only=True)
+    name = serializers.CharField(max_length=150, required=False, allow_blank=True, write_only=True)
+    first_name = serializers.CharField(max_length=60, required=False, allow_blank=True, write_only=True)
+    middle_name = serializers.CharField(max_length=60, required=False, allow_blank=True, write_only=True)
+    last_name = serializers.CharField(max_length=60, required=False, allow_blank=True, write_only=True)
     address = serializers.CharField(max_length=255, required=False, allow_blank=True, write_only=True)
     city = serializers.CharField(max_length=100, required=False, allow_blank=True, write_only=True)
     state = serializers.CharField(max_length=50, required=False, allow_blank=True, write_only=True)
@@ -238,6 +259,8 @@ class StayWriteSerializer(serializers.ModelSerializer):
         return room
 
     def validate(self, attrs):
+        if not self.instance or any(k in attrs for k in ("name", "first_name", "middle_name", "last_name")):
+            clean_name_parts(attrs, self.instance.guest if self.instance else None)
         inst = self.instance
         cin = attrs.get("check_in_date", inst.check_in_date if inst else None)
         cout = attrs.get("check_out_date", inst.check_out_date if inst else None)

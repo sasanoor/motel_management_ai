@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import api, { errorText } from '../api'
 import { Alert, Empty, Modal, PageHead } from '../components/ui'
-import { fmtDate } from '../utils'
+import { fmtDate, nameParts } from '../utils'
 
 const BLANK = {
-  name: '', phone: '', license_plate: '', car: '', address: '', city: '', state: '', zip_code: '',
+  first_name: '', middle_name: '', last_name: '', phone: '', license_plate: '', car: '', address: '', city: '', state: '', zip_code: '',
   dnr_reason: '', do_not_rent: true,
 }
 
@@ -91,7 +91,7 @@ export default function Dnr() {
 }
 
 function DnrForm({ initial, onClose, onSaved }) {
-  const [f, setF] = useState(initial)
+  const [f, setF] = useState(() => ({ ...initial, ...nameParts(initial) }))
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value })
@@ -104,7 +104,8 @@ function DnrForm({ initial, onClose, onSaved }) {
     setBusy(true)
     setErr('')
     try {
-      const body = { ...f, do_not_rent: true }
+      const { name: _old, ...rest } = f  // name is built from the parts on the server
+      const body = { ...rest, do_not_rent: true }
       const { data } = f.id ? await api.patch(`/guests/${f.id}/`, body) : await api.post('/guests/', body)
       onSaved(data)
     } catch (e2) {
@@ -117,9 +118,17 @@ function DnrForm({ initial, onClose, onSaved }) {
     <Modal title={f.id ? `Edit DNR: ${initial.name}` : 'Add to Do Not Rent list'} onClose={onClose} width={640}>
       <Alert>{err}</Alert>
       <form onSubmit={save} className="form-grid cols-2">
-        <label className="span-2">Name
-          <input value={f.name} onChange={set('name')} required autoFocus />
-        </label>
+        <div className="span-2 name-row">
+          <label><span>First name <span className="req">*</span></span>
+            <input value={f.first_name} onChange={set('first_name')} required autoFocus autoComplete="off" />
+          </label>
+          <label>Middle name
+            <input value={f.middle_name} onChange={set('middle_name')} autoComplete="off" />
+          </label>
+          <label><span>Last name <span className="req">*</span></span>
+            <input value={f.last_name} onChange={set('last_name')} required autoComplete="off" />
+          </label>
+        </div>
         <label>Phone
           <input value={f.phone} onChange={set('phone')} inputMode="tel" />
         </label>
