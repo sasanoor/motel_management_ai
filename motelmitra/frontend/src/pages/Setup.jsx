@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import api, { errorText } from '../api'
 import { useAuth } from '../auth'
 import { Alert, Empty, Modal, PageHead } from '../components/ui'
-import { ROLES, fmtDate, money } from '../utils'
+import { ROLES, fmtDate, money, num } from '../utils'
 
 /* ------------------------------------------------------------------ shared */
 function useList(url) {
@@ -68,13 +68,16 @@ export function RoomTypes() {
   const [edit, setEdit] = useState(null)
   const fields = [
     { name: 'name', label: 'Room type', required: true, placeholder: 'King, Queen, Double, Suite, Jacuzzi, Handicap' },
-    { name: 'default_rate', label: 'Default rate / night', type: 'number', step: '0.01', min: '0', required: true },
+    { name: 'default_rate', label: 'Daily rate (per night)', type: 'number', step: '0.01', min: '0', required: true },
+    { name: 'weekly_rate', label: 'Weekly rate (per week)', type: 'number', step: '0.01', min: '0', placeholder: 'Blank = daily × 7' },
+    { name: 'monthly_rate', label: 'Monthly rate (per month)', type: 'number', step: '0.01', min: '0', placeholder: 'Blank = daily × 30' },
     { name: 'description', label: 'Description', wide: true },
     { name: 'is_active', label: 'Status', type: 'checkbox', hint: 'Active' },
   ]
   async function save(f) {
-    if (f.id) await api.put(`/room-types/${f.id}/`, f)
-    else await api.post('/room-types/', f)
+    const body = { ...f, weekly_rate: f.weekly_rate || 0, monthly_rate: f.monthly_rate || 0 }
+    if (f.id) await api.put(`/room-types/${f.id}/`, body)
+    else await api.post('/room-types/', body)
     setEdit(null)
     load()
   }
@@ -84,20 +87,22 @@ export function RoomTypes() {
   }
   return (
     <>
-      <PageHead title="Room Types & Rates" sub="Default rate is pre-filled at check-in; clerks can change it per guest.">
-        <button className="btn btn-primary" onClick={() => setEdit({ name: '', default_rate: '', description: '', is_active: true })}>+ Add room type</button>
+      <PageHead title="Room Types & Rates" sub="Daily, weekly and monthly rates are pre-filled at check-in; clerks can change them per guest.">
+        <button className="btn btn-primary" onClick={() => setEdit({ name: '', default_rate: '', weekly_rate: '', monthly_rate: '', description: '', is_active: true })}>+ Add room type</button>
       </PageHead>
       <Alert>{err}</Alert>
       <div className="card no-pad">
         {rows && !rows.length && <Empty>No room types yet. Add King, Queen, Double, Suite, Jacuzzi, Handicap.</Empty>}
         {rows?.length > 0 && (
           <table className="table">
-            <thead><tr><th>Room type</th><th className="num">Default rate</th><th className="num">Rooms</th><th>Description</th><th>Status</th><th></th></tr></thead>
+            <thead><tr><th>Room type</th><th className="num">Daily</th><th className="num">Weekly</th><th className="num">Monthly</th><th className="num">Rooms</th><th>Description</th><th>Status</th><th></th></tr></thead>
             <tbody>
               {rows.map((r) => (
                 <tr key={r.id}>
                   <td><strong>{r.name}</strong></td>
                   <td className="num">{money(r.default_rate)}</td>
+                  <td className="num">{num(r.weekly_rate) ? money(r.weekly_rate) : <span className="muted tiny">{money(num(r.default_rate) * 7)} (×7)</span>}</td>
+                  <td className="num">{num(r.monthly_rate) ? money(r.monthly_rate) : <span className="muted tiny">{money(num(r.default_rate) * 30)} (×30)</span>}</td>
                   <td className="num">{r.room_count}</td>
                   <td>{r.description}</td>
                   <td><Active on={r.is_active} /></td>
@@ -165,7 +170,7 @@ export function Rooms() {
         {rows && !rows.length && <Empty>No rooms yet.</Empty>}
         {rows?.length > 0 && (
           <table className="table">
-            <thead><tr><th>Room</th><th>Type</th><th className="num">Default rate</th><th>Floor</th><th>Notes</th><th>Status</th><th></th></tr></thead>
+            <thead><tr><th>Room</th><th>Type</th><th className="num">Daily rate</th><th>Floor</th><th>Notes</th><th>Status</th><th></th></tr></thead>
             <tbody>
               {rows.map((r) => (
                 <tr key={r.id}>
@@ -395,6 +400,64 @@ export function Clients() {
             </tbody>
           </table>
         </Modal>
+      )}
+    </>
+  )
+}
+
+/* ------------------------------------------------------------------ charges & fees */
+export function ChargesSettings() {
+  const [f, setF] = useState(null)
+  const [err, setErr] = useState('')
+  const [msg, setMsg] = useState('')
+  const [busy, setBusy] = useState(false)
+  useEffect(() => { api.get('/settings/').then((r) => setF(r.data)).catch((e) => setErr(errorText(e))) }, [])
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value })
+
+  async function save(e) {
+    e.preventDefault()
+    setBusy(true); setErr(''); setMsg('')
+    try {
+      const { data } = await api.patch('/settings/', f)
+      setF(data)
+      setMsg('Saved. New check-ins will use these charges.')
+    } catch (e2) { setErr(errorText(e2)) }
+    setBusy(false)
+  }
+
+  return (
+    <>
+      <PageHead title="Charges & Fees" sub="Default extra charges at check-in. Clerks can change any amount per guest." />
+      <Alert>{err}</Alert>
+      <Alert kind="success">{msg}</Alert>
+      {f && (
+        <form className="card settings-card" onSubmit={save}>
+          <div className="form-grid cols-2">
+            <label>Card payment fee (%)
+              <input type="number" step="0.01" min="0" max="20" value={f.card_fee_percent} onChange={set('card_fee_percent')} />
+              <span className="hint">Added on the amount paid by card. Example: 3% on $100 = $3.00</span>
+            </label>
+            <label>Pet fee ($ per pet, per stay)
+              <input type="number" step="0.01" min="0" value={f.pet_fee} onChange={set('pet_fee')} />
+              <span className="hint">Charged once per pet for the whole stay</span>
+            </label>
+            <label>Extra person fee ($ per person, per night)
+              <input type="number" step="0.01" min="0" value={f.extra_person_fee} onChange={set('extra_person_fee')} />
+              <span className="hint">Charged for each guest above the included number, every night</span>
+            </label>
+            <label>Guests included in room rate
+              <input type="number" min="1" max="10" value={f.included_guests} onChange={set('included_guests')} />
+              <span className="hint">Example: 2 means the 3rd guest is an extra person</span>
+            </label>
+            <label>Late fee ($ per occurrence)
+              <input type="number" step="0.01" min="0" value={f.late_fee} onChange={set('late_fee')} />
+              <span className="hint">Offered at check-in and at checkout when the guest leaves after checkout time</span>
+            </label>
+            <div className="span-2 form-actions">
+              <button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Save charges'}</button>
+            </div>
+          </div>
+        </form>
       )}
     </>
   )

@@ -1,6 +1,7 @@
 import datetime
 from decimal import Decimal
 
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import mixins, status, viewsets
@@ -14,6 +15,7 @@ from accounts.permissions import (
     IsClientStaff, IsClientStaffOrSuperAdmin, IsMaintenanceOrStaff, get_request_client,
 )
 
+from . import early
 from .models import Guest, Note, Payment, Room, RoomType, Stay
 from .serializers import (
     GuestSerializer, NoteSerializer, PaymentSerializer, RoomSerializer, RoomTypeSerializer,
@@ -54,6 +56,12 @@ def stay_qs(client):
 
 def paid(stay, method=None):
     return sum((p.amount for p in stay.payments.all() if method is None or p.method == method), ZERO)
+
+
+def pay_type(p):
+    if p.kind == Payment.REFUND:
+        return "Refund"
+    return "Check-in" if p.is_initial else "Balance payment"
 
 
 def occupying_on(stays, day):
@@ -126,6 +134,8 @@ class RoomViewSet(viewsets.ModelViewSet):
             data.append({
                 "id": r.id, "number": r.number, "room_type": r.room_type.name,
                 "default_rate": str(r.room_type.default_rate),
+                "weekly_rate": str(r.room_type.weekly_rate),
+                "monthly_rate": str(r.room_type.monthly_rate),
                 "occupied": bool(s),
                 "stay_id": s.id if s else None,
                 "guest_name": s.guest.name if s else None,
@@ -135,8 +145,46 @@ class RoomViewSet(viewsets.ModelViewSet):
 
 
 # ------------------------------------------------------------------ guests
-class GuestViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
+def _digits(s):
+    return "".join(ch for ch in (s or "") if ch.isdigit())
+
+
+def _plate(s):
+    return "".join(ch for ch in (s or "") if ch.isalnum()).upper()
+
+
+def find_dnr(client, name="", phone="", plate=""):
+    """
+    Do Not Rent guests matching any of name / phone / plate.
+    Phone compares digits only (806-555-0111 = (806) 555 0111), plate ignores spaces and dashes,
+    name matches the full name, ignoring case.
+    Returns [(guest, [reasons])].
+    """
+    name = (name or "").strip().lower()
+    phone_d = _digits(phone)
+    plate_n = _plate(plate)
+    out = []
+    for g in Guest.objects.filter(client=client, do_not_rent=True).select_related("dnr_marked_by"):
+        why = []
+        if phone_d and len(phone_d) >= 7 and _digits(g.phone) and (
+            _digits(g.phone).endswith(phone_d[-10:]) or phone_d.endswith(_digits(g.phone)[-10:])
+        ):
+            why.append("phone")
+        if plate_n and len(plate_n) >= 3 and _plate(g.license_plate) == plate_n:
+            why.append("plate")
+        if name and len(name) >= 3 and " ".join(g.name.lower().split()) == " ".join(name.split()):
+            why.append("name")
+        if why:
+            out.append((g, why))
+    return out
+
+
+class GuestViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.CreateModelMixin,
                    mixins.UpdateModelMixin, viewsets.GenericViewSet):
+    """
+    Guests. POST adds someone straight to the Do Not Rent list (e.g. past customers);
+    if a guest with the same phone or plate already exists, that guest is flagged instead of duplicated.
+    """
     permission_classes = [IsClientStaff]
     serializer_class = GuestSerializer
 
@@ -148,6 +196,49 @@ class GuestViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         if self.request.query_params.get("dnr") == "1":
             qs = qs.filter(do_not_rent=True)
         return qs[:200] if self.action == "list" else qs
+
+    def create(self, request, *args, **kwargs):
+        client = request.user.client
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+        existing = None
+        if data.get("phone") and len(_digits(data["phone"])) >= 7:
+            existing = next((g for g in Guest.objects.filter(client=client)
+                             if _digits(g.phone) and _digits(g.phone)[-10:] == _digits(data["phone"])[-10:]), None)
+        if existing is None and data.get("license_plate"):
+            existing = next((g for g in Guest.objects.filter(client=client)
+                             if _plate(g.license_plate) == _plate(data["license_plate"])), None)
+        if existing:
+            for k, v in data.items():
+                if v not in ("", None) or k in ("do_not_rent",):
+                    setattr(existing, k, v)
+            if existing.do_not_rent and not existing.dnr_marked_by_id:
+                existing.dnr_marked_by = request.user
+            existing.save()
+            out = GuestSerializer(existing).data
+            out["merged"] = True
+            return Response(out, status=status.HTTP_200_OK)
+        guest = ser.save(client=client, dnr_marked_by=request.user if data.get("do_not_rent") else None)
+        return Response(GuestSerializer(guest).data, status=status.HTTP_201_CREATED)
+
+    def perform_update(self, serializer):
+        was = serializer.instance.do_not_rent
+        guest = serializer.save()
+        if guest.do_not_rent and not was:
+            guest.dnr_marked_by = self.request.user
+            guest.save()
+
+    @action(detail=False, methods=["get"])
+    def dnr_check(self, request):
+        """Check-in form "Check DNR" button: is this name / phone / plate on the Do Not Rent list?"""
+        p = request.query_params
+        hits = find_dnr(request.user.client, p.get("name"), p.get("phone"), p.get("plate"))
+        checked = [k for k in ("name", "phone", "plate") if (p.get(k) or "").strip()]
+        return Response({
+            "checked": checked,
+            "matches": [{**GuestSerializer(g).data, "matched_on": why} for g, why in hits],
+        })
 
     @action(detail=False, methods=["get"])
     def check(self, request):
@@ -198,6 +289,8 @@ class StayViewSet(viewsets.ModelViewSet):
         if self.action in ("deleted", "restore"):
             return stay_qs(client).filter(is_deleted=True).order_by("-deleted_at")
         qs = stay_qs(client).filter(is_deleted=False)
+        if self.action != "list":
+            return qs  # filters below are for the list only (early_quote also takes ?date=)
         p = self.request.query_params
         if p.get("date"):
             d = parse_date(p["date"])
@@ -253,27 +346,215 @@ class StayViewSet(viewsets.ModelViewSet):
     def payments(self, request, pk=None):
         """Add a balance payment. It is linked to the stay, so it rolls into the check-in date report."""
         stay = self.get_object()
-        ser = PaymentSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-        ser.save(stay=stay, clerk=request.user, paid_at=timezone.now())
+        if "cash" in request.data or "credit" in request.data:
+            # Same as check-in: cash and / or card in one go, card fee added to the stay's charges.
+            cash = _decimal(request.data.get("cash") or 0, "cash")
+            credit = _decimal(request.data.get("credit") or 0, "credit")
+            fee = _decimal(request.data.get("card_fee") or 0, "card_fee")
+            # Clerk edited the balance (like at check-in): difference is stored as an adjustment.
+            try:
+                adj = Decimal(str(request.data.get("adjustment_change") or 0)).quantize(Decimal("0.01"))
+            except Exception:
+                raise ValidationError({"balance": "Enter a valid balance."})
+            if cash + credit <= 0 and adj == 0:
+                raise ValidationError({"amount": "Enter a cash or card amount."})
+            if stay.total_amount + fee + adj < 0:
+                raise ValidationError({"balance": "Total cannot go below zero."})
+            if fee > 0 and credit <= 0:
+                raise ValidationError({"card_fee": "Card fee needs a card amount."})
+            notes = (request.data.get("notes") or "").strip()[:255]
+            now = timezone.now()
+            with transaction.atomic():
+                if fee > 0 or adj != 0:
+                    stay.card_fee = (stay.card_fee or ZERO) + fee
+                    stay.adjustment = (stay.adjustment or ZERO) + adj
+                    if adj != 0:
+                        word = "Discount" if adj < 0 else "Extra charge"
+                        stay.comments = (stay.comments + "\n" if stay.comments else "") + \
+                            f"{word} of {abs(adj)} added when taking a balance payment."
+                    stay.save()
+                for amt, method in ((cash, Payment.CASH), (credit, Payment.CREDIT)):
+                    if amt > 0:
+                        Payment.objects.create(stay=stay, amount=amt, method=method, paid_at=now,
+                                               clerk=request.user, notes=notes)
+        else:
+            ser = PaymentSerializer(data=request.data)
+            ser.is_valid(raise_exception=True)
+            ser.save(stay=stay, clerk=request.user, paid_at=timezone.now())
         stay = stay_qs(request.user.client).get(pk=stay.pk)
         return Response(StaySerializer(stay).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["post"])
     def checkout(self, request, pk=None):
+        """Normal checkout. Optional late_fee (e.g. guest left after the checkout time)."""
         stay = self.get_object()
+        if stay.status != Stay.CHECKED_IN:
+            raise ValidationError({"detail": "This guest is already checked out."})
+        if request.data.get("late_fee") not in (None, ""):
+            fee = _decimal(request.data.get("late_fee"), "late_fee")
+            stay.late_fee = fee
         stay.status = Stay.CHECKED_OUT
         stay.checked_out_at = timezone.now()
         stay.save()
+        stay = stay_qs(request.user.client).get(pk=stay.pk)
+        return Response(StaySerializer(stay).data)
+
+    def _early_args(self, stay, data):
+        if stay.status != Stay.CHECKED_IN:
+            raise ValidationError({"detail": "Only a checked-in guest can check out early."})
+        today = timezone.localdate()
+        depart = parse_date(data.get("date"), today, "date")
+        if depart < stay.check_in_date:
+            raise ValidationError({"date": "Departure cannot be before the check-in date."})
+        if depart > today:
+            raise ValidationError({"date": "Departure cannot be in the future."})
+        if depart >= stay.check_out_date:
+            raise ValidationError({"date": f"Guest is not leaving early. Booked checkout is "
+                                           f"{stay.check_out_date:%m/%d/%Y}; use normal checkout."})
+        method = data.get("method") or early.DAILY_RATE
+        if method not in early.METHODS:
+            raise ValidationError({"method": f"Use one of {', '.join(early.METHODS)}."})
+        custom = None
+        if method == early.CUSTOM:
+            if data.get("room_charge") in (None, ""):
+                raise ValidationError({"room_charge": "Enter the room charge for the nights used."})
+            custom = _decimal(data.get("room_charge"), "room_charge")
+        return depart, method, custom
+
+    @action(detail=True, methods=["get"])
+    def early_quote(self, request, pk=None):
+        """Preview an early checkout: new total, refund due or balance still owed."""
+        stay = self.get_object()
+        depart, method, custom = self._early_args(stay, request.query_params)
+        return Response(early.quote(stay, depart, method, custom))
+
+    @action(detail=True, methods=["post"])
+    def early_checkout(self, request, pk=None):
+        """
+        Check a guest out before the booked date and (optionally) refund the difference.
+        Body: date, method, room_charge (CUSTOM only), refund_amount (default = full refund due),
+              refund_method CASH | CREDIT, notes.
+        """
+        stay = self.get_object()
+        depart, method, custom = self._early_args(stay, request.data)
+        qt = early.quote(stay, depart, method, custom)
+        due = Decimal(qt["refund_due"])
+        raw = request.data.get("refund_amount")
+        refund = due if raw in (None, "") else _decimal(raw, "refund_amount")
+        if refund > due:
+            raise ValidationError({"refund_amount": f"Refund cannot be more than {due}."})
+        refund_method = request.data.get("refund_method") or Payment.CASH
+        if refund > 0 and refund_method not in (Payment.CASH, Payment.CREDIT):
+            raise ValidationError({"refund_method": "Use CASH or CREDIT."})
+        notes = (request.data.get("notes") or "").strip()[:200]
+
+        with transaction.atomic():
+            stay.early_snapshot = {
+                "check_out_date": stay.check_out_date.isoformat(),
+                "nights": stay.num_days,
+                "periods": stay.periods,
+                "room_charge": str(stay.room_charge),
+                "room_charge_override": None if stay.room_charge_override is None else str(stay.room_charge_override),
+                "extra_person_fee": str(stay.extra_person_fee or 0),
+                "total": str(stay.total_amount),
+                "method": method,
+            }
+            stay.check_out_date = depart
+            stay.room_charge_override = Decimal(qt["room_charge"])
+            stay.extra_person_fee = Decimal(qt["extra_person_fee"])
+            stay.status = Stay.CHECKED_OUT
+            stay.checked_out_at = timezone.now()
+            line = (f"Early checkout on {depart:%m/%d/%Y} (booked to {qt['original_check_out_date']:%m/%d/%Y}), "
+                    f"{qt['nights_used']} of {qt['nights_booked']} nights, {METHOD_LABELS[method]}. "
+                    f"Total {qt['original_total']} -> {qt['new_total']}.")
+            if refund > 0:
+                line += f" Refunded {refund} {refund_method.lower()}."
+            if notes:
+                line += f" {notes}"
+            stay.comments = (stay.comments + "\n" if stay.comments else "") + line
+            stay.save()
+            if refund > 0:
+                Payment.objects.create(
+                    stay=stay, amount=-refund, method=refund_method, kind=Payment.REFUND,
+                    paid_at=timezone.now(), clerk=request.user, notes=notes or "Early checkout refund",
+                )
+        stay = stay_qs(request.user.client).get(pk=stay.pk)
         return Response(StaySerializer(stay).data)
 
     @action(detail=True, methods=["post"])
-    def reopen(self, request, pk=None):
+    def refund(self, request, pk=None):
+        """Give money back to a guest who has paid more than the total (balance below zero)."""
         stay = self.get_object()
-        stay.status = Stay.CHECKED_IN
-        stay.checked_out_at = None
-        stay.save()
+        amount = _decimal(request.data.get("amount"), "amount")
+        if amount <= 0:
+            raise ValidationError({"amount": "Amount must be greater than zero."})
+        over = paid(stay) - stay.total_amount
+        if over <= 0:
+            raise ValidationError({"amount": "Guest has not overpaid. Nothing to refund."})
+        if amount > over:
+            raise ValidationError({"amount": f"Refund cannot be more than the overpaid amount {over}."})
+        method = request.data.get("method") or Payment.CASH
+        if method not in (Payment.CASH, Payment.CREDIT):
+            raise ValidationError({"method": "Use CASH or CREDIT."})
+        Payment.objects.create(
+            stay=stay, amount=-amount, method=method, kind=Payment.REFUND, paid_at=timezone.now(),
+            clerk=request.user, notes=(request.data.get("notes") or "Refund").strip()[:255],
+        )
+        stay = stay_qs(request.user.client).get(pk=stay.pk)
+        return Response(StaySerializer(stay).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"])
+    def reopen(self, request, pk=None):
+        """Undo checkout. An early checkout is reversed too (booked dates and charges come back)."""
+        stay = self.get_object()
+        if stay.status != Stay.CHECKED_OUT:
+            raise ValidationError({"detail": "This guest is not checked out."})
+        snap = stay.early_snapshot
+        if snap:
+            orig_out = datetime.date.fromisoformat(snap["check_out_date"])
+            end = orig_out if orig_out > stay.check_in_date else stay.check_in_date + datetime.timedelta(days=1)
+            other = (Stay.objects.filter(room=stay.room, is_deleted=False, status=Stay.CHECKED_IN,
+                                         check_in_date__lt=end, check_out_date__gt=stay.check_in_date)
+                     .exclude(pk=stay.pk).select_related("guest").first())
+            if other and request.data.get("force") not in (True, "true", "1", 1):
+                raise ValidationError({"overlap": f"Room {stay.room.number} has been rented to {other.guest.name} "
+                                                  f"since the early checkout. Undo anyway?"})
+            with transaction.atomic():
+                stay.check_out_date = orig_out
+                stay.periods = int(snap.get("periods") or stay.periods)
+                o = snap.get("room_charge_override")
+                stay.room_charge_override = None if o in (None, "") else Decimal(o)
+                stay.extra_person_fee = Decimal(snap.get("extra_person_fee") or 0)
+                stay.early_snapshot = None
+                stay.status = Stay.CHECKED_IN
+                stay.checked_out_at = None
+                stay.comments = (stay.comments + "\n" if stay.comments else "") + \
+                    f"Early checkout undone; booked to {orig_out:%m/%d/%Y} again. Refunds already given stay on record."
+                stay.save()
+        else:
+            stay.status = Stay.CHECKED_IN
+            stay.checked_out_at = None
+            stay.save()
+        stay = stay_qs(request.user.client).get(pk=stay.pk)
         return Response(StaySerializer(stay).data)
+
+
+METHOD_LABELS = {
+    early.DAILY_RATE: "charged at daily rate",
+    early.PRORATA: "charged pro-rata",
+    early.NO_REFUND: "full charge kept",
+    early.CUSTOM: "custom room charge",
+}
+
+
+def _decimal(value, field):
+    try:
+        v = Decimal(str(value)).quantize(Decimal("0.01"))
+    except Exception:
+        raise ValidationError({field: "Enter a valid amount."})
+    if v < 0:
+        raise ValidationError({field: "Cannot be negative."})
+    return v
 
 
 # ------------------------------------------------------------------ dashboard
@@ -288,6 +569,8 @@ def dashboard(request):
     checkouts = [s for s in staying if s.check_out_date == day]
     arrivals = [s for s in staying if s.check_in_date == day]
     occupied = occupying_on(staying, day)
+    occupied_ids = {s.room_id for s in occupied}
+    due_out_ids = {s.room_id for s in checkouts if s.status == Stay.CHECKED_IN}
     total_rooms = Room.objects.filter(client=client, is_active=True).count()
     open_balances = [s for s in base.filter(check_in_date__lte=day) if s.total_amount - paid(s) > 0]
 
@@ -307,9 +590,13 @@ def dashboard(request):
         "checkouts": StaySerializer(checkouts, many=True).data,
         "staying": StaySerializer(staying, many=True).data,
         # every active room, so the Room sheet can show empty rows for vacant rooms
+        # available = free for the night of this date; due_out = guest leaving today, not checked out yet
         "rooms": [
             {"id": r.id, "number": r.number, "room_type": r.room_type.name,
-             "default_rate": str(r.room_type.default_rate)}
+             "default_rate": str(r.room_type.default_rate),
+             "weekly_rate": str(r.room_type.weekly_rate), "monthly_rate": str(r.room_type.monthly_rate),
+             "available": r.id not in occupied_ids,
+             "due_out": r.id in due_out_ids}
             for r in Room.objects.filter(client=client, is_active=True).select_related("room_type")
         ],
     })
@@ -342,6 +629,7 @@ def report_checkins(request):
             "id": s.id, "check_in_date": s.check_in_date, "room_number": s.room.number,
             "room_type": s.room.room_type.name, "guest_name": s.guest.name,
             "num_guests": s.num_guests, "num_days": s.num_days, "rate": str(s.rate),
+            "rate_type": s.rate_type, "periods": s.periods, "fees": str(s.charges_total),
             "total": str(s.total_amount), "cash": str(cash), "credit": str(credit),
             "paid": str(cash + credit), "balance": str(bal),
             "clerk": (s.clerk.get_full_name() or s.clerk.username) if s.clerk else "",
@@ -361,7 +649,7 @@ def report_checkins(request):
 @api_view(["GET"])
 @permission_classes([IsClientStaffOrSuperAdmin])
 def report_collections(request):
-    """Money actually collected per day (by payment date), cash vs credit."""
+    """Money actually collected per day (by payment date), cash vs credit, net of refunds given."""
     client = get_request_client(request)
     start, end = _date_range(request)
     tz = timezone.get_current_timezone()
@@ -372,10 +660,13 @@ def report_collections(request):
         .select_related("stay", "stay__guest", "stay__room", "clerk").order_by("paid_at")
     )
     by_day, detail = {}, []
-    totals = {"cash": ZERO, "credit": ZERO, "total": ZERO}
+    totals = {"cash": ZERO, "credit": ZERO, "refunds": ZERO, "total": ZERO}
     for p in pays:
         d = timezone.localdate(p.paid_at)
-        row = by_day.setdefault(d, {"date": d, "cash": ZERO, "credit": ZERO, "total": ZERO, "count": 0})
+        row = by_day.setdefault(d, {"date": d, "cash": ZERO, "credit": ZERO, "refunds": ZERO, "total": ZERO, "count": 0})
+        if p.kind == Payment.REFUND:
+            row["refunds"] += -p.amount
+            totals["refunds"] += -p.amount
         key = "cash" if p.method == Payment.CASH else "credit"
         row[key] += p.amount
         row["total"] += p.amount
@@ -384,12 +675,12 @@ def report_collections(request):
         totals["total"] += p.amount
         detail.append({
             "id": p.id, "paid_at": p.paid_at, "method": p.method, "amount": str(p.amount),
-            "type": "Check-in" if p.is_initial else "Balance payment",
+            "type": pay_type(p),
             "guest_name": p.stay.guest.name, "room_number": p.stay.room.number,
             "check_in_date": p.stay.check_in_date,
             "clerk": (p.clerk.get_full_name() or p.clerk.username) if p.clerk else "",
         })
-    days = [{**r, "cash": str(r["cash"]), "credit": str(r["credit"]), "total": str(r["total"])}
+    days = [{**r, "cash": str(r["cash"]), "credit": str(r["credit"]), "refunds": str(r["refunds"]), "total": str(r["total"])}
             for r in sorted(by_day.values(), key=lambda r: r["date"])]
     return Response({
         "start": start, "end": end, "days": days, "payments": detail,
@@ -438,7 +729,7 @@ def report_occupancy(request):
             name = s.room.room_type.name
             if name in type_nights:
                 type_nights[name] += 1
-        revenue = sum((s.rate for s in occ), ZERO)
+        revenue = sum((s.nightly_value for s in occ), ZERO)
         days.append({
             "date": d, "occupied": len(room_ids), "available": max(total_rooms - len(room_ids), 0),
             "total_rooms": total_rooms,
@@ -502,6 +793,7 @@ def report_today(request):
     cash = sum((p.amount for p in pays if p.method == Payment.CASH), ZERO)
     credit = sum((p.amount for p in pays if p.method == Payment.CREDIT), ZERO)
     from_checkins = sum((p.amount for p in pays if p.stay.check_in_date == day), ZERO)
+    refunds = sum((-p.amount for p in pays if p.kind == Payment.REFUND), ZERO)
 
     by_clerk = {}
     for p in pays:
@@ -524,6 +816,7 @@ def report_today(request):
             "id": s.id, "time": s.check_in_time, "room_number": s.room.number, "room_type": s.room.room_type.name,
             "guest_name": s.guest.name, "num_guests": s.num_guests, "num_days": s.num_days,
             "check_out_date": s.check_out_date, "rate": str(s.rate), "total": str(s.total_amount),
+            "rate_type": s.rate_type, "periods": s.periods,
             "cash": str(c), "credit": str(cr), "balance": str(bal), "clerk": clerk_name(s.clerk),
             "do_not_rent": s.guest.do_not_rent,
         })
@@ -545,6 +838,8 @@ def report_today(request):
             "cash": str(cash),
             "credit": str(credit),
             "collected": str(cash + credit),
+            "refunds": str(refunds),
+            "received": str(cash + credit + refunds),
             "from_todays_checkins": str(from_checkins),
             "from_earlier_stays": str(cash + credit - from_checkins),
             "unpaid_from_todays_checkins": str(owed),
@@ -562,7 +857,7 @@ def report_today(request):
         } for s in checkouts],
         "payments": [{
             "id": p.id, "paid_at": p.paid_at, "method": p.method, "amount": str(p.amount),
-            "type": "Check-in" if p.is_initial else "Balance payment",
+            "type": pay_type(p),
             "guest_name": p.stay.guest.name, "room_number": p.stay.room.number,
             "stay_id": p.stay_id, "check_in_date": p.stay.check_in_date, "clerk": clerk_name(p.clerk),
         } for p in pays],

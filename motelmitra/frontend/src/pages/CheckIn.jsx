@@ -1,9 +1,13 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import api, { errorText } from '../api'
 import { useAuth } from '../auth'
+import RoomPicker from '../components/RoomPicker'
 import { Alert, Modal, PageHead } from '../components/ui'
-import { addDays, daysBetween, fmtDate, money, nowTime, num, todayISO } from '../utils'
+import {
+  RATE_TYPES, addDays, addMonths, daysBetween, fmtDate, money, monthsBetween, nowTime, num, periodText,
+  rateFor, rateTypeInfo, todayISO,
+} from '../utils'
 
 const blank = (room = '', date = todayISO()) => ({
   room,
@@ -12,6 +16,8 @@ const blank = (room = '', date = todayISO()) => ({
   check_out_date: addDays(date, 1),
   check_out_time: '11:00',
   num_guests: 1,
+  rate_type: 'DAILY',
+  periods: 1,          // weeks or months when renting weekly / monthly
   rate: '',
   name: '', address: '', city: '', state: '', zip_code: '',
   phone: '', car: '', license_plate: '',
@@ -19,6 +25,13 @@ const blank = (room = '', date = todayISO()) => ({
   cash: '', credit: '',
   comments: '',
   adjustment: 0,
+  // extra charges: null = use the motel's default (auto), a number = clerk typed it
+  pets: 0,
+  pet_fee: null,
+  extra_persons: null,
+  extra_person_fee: null,
+  card_fee: null,
+  late_fee: 0,         // opt-in: clerk applies the motel's late fee or types one
   guest_id: null,
 })
 
@@ -36,11 +49,18 @@ export default function CheckIn() {
   const [match, setMatch] = useState(null)       // returning guest suggestion
   const [dnrHit, setDnrHit] = useState(null)     // do-not-rent guest found
   const [dnrAck, setDnrAck] = useState(false)
+  const [dnrResult, setDnrResult] = useState(null) // { key, checked, matches } from "Check DNR list"
+  const [dnrBusy, setDnrBusy] = useState(false)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
   const [originalRoom, setOriginalRoom] = useState(null)
   const [paidBefore, setPaidBefore] = useState(0)      // edit mode: payments already taken
   const [balanceText, setBalanceText] = useState(null) // text while the clerk types a balance
+  const [fees, setFees] = useState(null)               // motel's Charges & Fees settings
+  const renewId = !editing ? params.get('renew') : null  // "Check out & check in again"
+  const [renewOf, setRenewOf] = useState(null)          // the stay being continued
+
+  useEffect(() => { api.get('/settings/').then((r) => setFees(r.data)).catch(() => {}) }, [])
 
   const set = (k) => (e) => {
     const v = e?.target ? (e.target.type === 'checkbox' ? e.target.checked : e.target.value) : e
@@ -59,6 +79,9 @@ export default function CheckIn() {
         check_in_date: s.check_in_date, check_in_time: s.check_in_time.slice(0, 5),
         check_out_date: s.check_out_date, check_out_time: s.check_out_time.slice(0, 5),
         num_guests: s.num_guests, rate: s.rate, comments: s.comments, adjustment: num(s.adjustment),
+        rate_type: s.rate_type || 'DAILY', periods: s.periods || 1,
+        pets: s.pets || 0, extra_persons: s.extra_persons ?? 0, pet_fee: num(s.pet_fee),
+        extra_person_fee: num(s.extra_person_fee), card_fee: num(s.card_fee), late_fee: num(s.late_fee),
         name: s.guest.name, address: s.guest.address, city: s.guest.city, state: s.guest.state,
         zip_code: s.guest.zip_code, phone: s.guest.phone, car: s.guest.car,
         license_plate: s.guest.license_plate, do_not_rent: s.guest.do_not_rent, guest_id: s.guest.id,
@@ -66,6 +89,28 @@ export default function CheckIn() {
       setDnrAck(true)
     }).catch((e) => setErr(errorText(e)))
   }, [editing, id])
+
+  // Check out & check in again: copy guest, room, rent type and rate into a new check-in starting today
+  useEffect(() => {
+    if (!renewId) return
+    api.get(`/stays/${renewId}/`).then(({ data: s }) => {
+      setRenewOf(s)
+      setOriginalRoom(s.room) // the guest's own room is not "occupied" for this check-in
+      const start = todayISO()
+      const type = s.rate_type || 'DAILY'
+      const n = type === 'DAILY' ? Math.max(s.num_days || 1, 1) : Math.max(s.periods || 1, 1)
+      const end = type === 'WEEKLY' ? addDays(start, 7 * n) : type === 'MONTHLY' ? addMonths(start, n) : addDays(start, n)
+      setF({
+        ...blank(String(s.room), start),
+        check_out_date: end, check_out_time: s.check_out_time.slice(0, 5),
+        rate_type: type, periods: n, rate: s.rate, num_guests: s.num_guests, pets: s.pets || 0,
+        name: s.guest.name, address: s.guest.address, city: s.guest.city, state: s.guest.state,
+        zip_code: s.guest.zip_code, phone: s.guest.phone, car: s.guest.car,
+        license_plate: s.guest.license_plate, do_not_rent: s.guest.do_not_rent, guest_id: s.guest.id,
+      })
+      setDnrAck(true)
+    }).catch((e) => setErr(errorText(e)))
+  }, [renewId])
 
   // rooms + their status for the check-in date
   useEffect(() => {
@@ -75,45 +120,102 @@ export default function CheckIn() {
       setF((p) => {
         if (!p.room || p.rate) return p
         const room = r.data.find((x) => String(x.id) === String(p.room))
-        return room ? { ...p, rate: room.default_rate } : p
+        return room ? { ...p, rate: rateFor(room, p.rate_type) } : p
       })
     }).catch(() => {})
   }, [f.check_in_date])
 
   const days = Math.max(daysBetween(f.check_in_date, f.check_out_date), 1)
-  const roomCharge = num(f.rate) * days
-  const total = roomCharge + num(f.adjustment)
+  const rt = rateTypeInfo(f.rate_type)
+  const periods = f.rate_type === 'DAILY' ? days : Math.max(num(f.periods), 1)
+  const roomCharge = num(f.rate) * periods
+  const selectedRoom = board.find((x) => String(x.id) === String(f.room))
+
+  // ---- extra charges (pets, extra persons, card fee)
+  const r2 = (n) => Math.round(n * 100) / 100
+  const included = fees?.included_guests ?? 2
+  const cardPct = num(fees?.card_fee_percent)
+  const extraPersons = f.extra_persons ?? Math.max(num(f.num_guests) - included, 0)
+  const petFee = f.pet_fee ?? r2(num(f.pets) * num(fees?.pet_fee))
+  const extraFee = f.extra_person_fee ?? r2(extraPersons * num(fees?.extra_person_fee) * days)
+  const cardFee = f.card_fee ?? (editing ? 0 : r2((num(f.credit) * cardPct) / 100))
+  const lateFee = num(f.late_fee)
+  const charges = petFee + extraFee + cardFee + lateFee
+
+  const total = roomCharge + charges + num(f.adjustment)
   const paidNow = editing ? paidBefore : num(f.cash) + num(f.credit)
   const balance = total - paidNow
+
+  // Put the rest on the card, including the card fee on that amount.
+  function cardForBalance() {
+    const due = roomCharge + petFee + extraFee + lateFee + num(f.adjustment) - num(f.cash)
+    if (due <= 0) return
+    // auto fee: card amount c must cover due + c × pct  ->  c = due / (1 - pct)
+    const credit = f.card_fee == null ? due / (1 - cardPct / 100) : due + num(f.card_fee)
+    setF((p) => ({ ...p, credit: r2(credit).toFixed(2) }))
+  }
+
+  // a fee input: shows the auto value until the clerk types one; ↺ goes back to auto
+  const feeValue = (key, auto) => (f[key] ?? auto)
+  const setFee = (key) => (e) => setF((p) => ({ ...p, [key]: e.target.value === '' ? 0 : Number(e.target.value) }))
+  const resetFee = (key) => setF((p) => ({ ...p, [key]: null }))
 
   // Clerk types a balance: keep rate and payments, store the difference as an adjustment.
   function editBalance(e) {
     const text = e.target.value
     setBalanceText(text)
     if (text === '' || isNaN(Number(text))) return
-    const adj = Number(text) - (roomCharge - paidNow)
+    const adj = Number(text) - (roomCharge + charges - paidNow)
     setF((p) => ({ ...p, adjustment: Math.round(adj * 100) / 100 }))
   }
 
-  const roomsByType = useMemo(() => {
-    const g = {}
-    board.forEach((r) => { (g[r.room_type] ||= []).push(r) })
-    return g
-  }, [board])
-
-  function pickRoom(e) {
-    const roomId = e.target.value
-    const r = board.find((x) => String(x.id) === roomId)
-    setF((p) => ({ ...p, room: roomId, rate: !editing || !p.rate ? (r?.default_rate ?? p.rate) : p.rate }))
+  function pickRoom(r) {
+    setF((p) => ({ ...p, room: String(r.id), rate: !editing || !p.rate ? rateFor(r, p.rate_type) : p.rate }))
   }
 
-  function setDays(e) {
+  // checkout date for a count of nights / weeks / months
+  const checkoutFor = (start, type, n) =>
+    type === 'WEEKLY' ? addDays(start, 7 * n) : type === 'MONTHLY' ? addMonths(start, n) : addDays(start, n)
+
+  function setRateType(type) {
+    setF((p) => {
+      const n = type === 'DAILY' ? Math.max(daysBetween(p.check_in_date, p.check_out_date), 1) : 1
+      return {
+        ...p,
+        rate_type: type,
+        periods: n,
+        check_out_date: type === 'DAILY' ? p.check_out_date : checkoutFor(p.check_in_date, type, 1),
+        rate: selectedRoom ? rateFor(selectedRoom, type) : p.rate,
+      }
+    })
+  }
+
+  function setCheckIn(e) {
+    const start = e.target.value
+    if (!start) return
+    setF((p) => {
+      const n = p.rate_type === 'DAILY' ? Math.max(daysBetween(p.check_in_date, p.check_out_date), 1) : Math.max(num(p.periods), 1)
+      return { ...p, check_in_date: start, check_out_date: checkoutFor(start, p.rate_type, n) }
+    })
+  }
+
+  function setCheckOut(e) {
+    const end = e.target.value
+    if (!end) return
+    setF((p) => {
+      const nights = Math.max(daysBetween(p.check_in_date, end), 1)
+      const n = p.rate_type === 'WEEKLY' ? Math.ceil(nights / 7) : p.rate_type === 'MONTHLY' ? monthsBetween(p.check_in_date, end) : nights
+      return { ...p, check_out_date: end, periods: n }
+    })
+  }
+
+  function setCount(e) {
     const n = Math.max(parseInt(e.target.value || '1', 10), 1)
-    setF((p) => ({ ...p, check_out_date: addDays(p.check_in_date, n) }))
+    setF((p) => ({ ...p, periods: n, check_out_date: checkoutFor(p.check_in_date, p.rate_type, n) }))
   }
 
   async function lookup() {
-    if (editing) return
+    if (editing || renewOf) return
     const params = { phone: f.phone.trim(), plate: f.license_plate.trim() }
     if (!params.phone && !params.plate) return
     try {
@@ -134,6 +236,29 @@ export default function CheckIn() {
     setMatch(null)
   }
 
+  // ---- Do Not Rent check (name / phone / plate against the DNR list)
+  const dnrKey = `${f.name.trim().toLowerCase()}|${f.phone.trim()}|${f.license_plate.trim().toLowerCase()}`
+  const dnrFresh = dnrResult && dnrResult.key === dnrKey
+
+  async function checkDnr() {
+    if (!f.name.trim() && !f.phone.trim() && !f.license_plate.trim()) {
+      setDnrResult({ key: dnrKey, checked: [], matches: [], empty: true })
+      return null
+    }
+    setDnrBusy(true)
+    try {
+      const { data } = await api.get('/guests/dnr_check/', { params: { name: f.name, phone: f.phone, plate: f.license_plate } })
+      const res = { key: dnrKey, ...data }
+      setDnrResult(res)
+      return res
+    } catch (e) {
+      setErr(errorText(e))
+      return null
+    } finally {
+      setDnrBusy(false)
+    }
+  }
+
   async function submit(e, allowOverlap = false) {
     e?.preventDefault()
     if (!f.room) return setErr('Select a room.')
@@ -141,11 +266,22 @@ export default function CheckIn() {
       setDnrHit({ name: f.name, phone: f.phone, license_plate: f.license_plate, self: true })
       return
     }
+    // always check the DNR list before saving a new check-in
+    if (!editing && !dnrAck) {
+      const res = dnrFresh ? dnrResult : await checkDnr()
+      if (res?.matches?.length) {
+        setDnrHit({ ...res.matches[0], matches: res.matches })
+        return
+      }
+    }
     setBusy(true)
     setErr('')
     const payload = {
       ...f, cash: f.cash || 0, credit: f.credit || 0, rate: f.rate || 0,
       adjustment: num(f.adjustment).toFixed(2), allow_overlap: allowOverlap,
+      pets: num(f.pets), extra_persons: extraPersons,
+      renew_from: renewOf ? renewOf.id : null,
+      pet_fee: petFee.toFixed(2), extra_person_fee: extraFee.toFixed(2), card_fee: cardFee.toFixed(2), late_fee: lateFee.toFixed(2),
     }
     try {
       const { data } = editing
@@ -166,7 +302,18 @@ export default function CheckIn() {
 
   return (
     <>
-      <PageHead title={editing ? 'Edit Guest' : 'New Check-in'} sub={editing ? null : 'Guest onboarding'} />
+      <PageHead
+        title={editing ? 'Edit Guest' : renewOf ? 'Check in again' : 'New Check-in'}
+        sub={editing ? null : renewOf ? 'New entry for a guest staying on' : 'Guest onboarding'}
+      />
+      {renewOf && (
+        <div className="alert alert-info renew-banner">
+          Continuing <strong>{renewOf.guest.name}</strong>, Room {renewOf.room_number}
+          {' '}({fmtDate(renewOf.check_in_date)} → {fmtDate(renewOf.check_out_date)}).
+          {' '}The previous stay will be <strong>checked out</strong> when you save this check-in.
+          {num(renewOf.balance) > 0 && <> Previous stay still owes <strong className="owed">{money(renewOf.balance)}</strong>.</>}
+        </div>
+      )}
       <Alert>{err}</Alert>
       {match && (
         <div className="alert alert-info">
@@ -183,38 +330,34 @@ export default function CheckIn() {
         <section className="card">
           <h2>Stay</h2>
           <div className="form-grid cols-4">
-            <label className="span-2">Room number
-              <select value={f.room} onChange={pickRoom} required>
-                <option value="">Select room…</option>
-                {Object.entries(roomsByType).map(([type, rooms]) => (
-                  <optgroup key={type} label={type}>
-                    {rooms.map((r) => {
-                      const busyRoom = r.occupied && r.id !== originalRoom
-                      return (
-                        <option key={r.id} value={r.id}>
-                          {r.number} · {type} · {money(r.default_rate)}
-                          {busyRoom ? ` (occupied: ${r.guest_name} till ${fmtDate(r.check_out_date)})` : ''}
-                        </option>
-                      )
-                    })}
-                  </optgroup>
+            <div className="field span-2">
+              <span className="field-label">Room number</span>
+              <RoomPicker rooms={board} value={f.room} onChange={pickRoom} currentRoomId={originalRoom} rateType={f.rate_type} />
+            </div>
+            <div className="field span-2">
+              <span className="field-label">Rent by</span>
+              <div className="seg">
+                {RATE_TYPES.map((t) => (
+                  <button type="button" key={t.key} className={f.rate_type === t.key ? 'on' : ''} onClick={() => setRateType(t.key)}>
+                    {t.label}
+                  </button>
                 ))}
-              </select>
-            </label>
+              </div>
+            </div>
             <label>No. of guests
               <input type="number" min="1" value={f.num_guests} onChange={set('num_guests')} required />
             </label>
-            <label>No. of days
-              <input type="number" min="1" value={days} onChange={setDays} />
+            <label>{rt.count}
+              <input type="number" min="1" value={periods} onChange={setCount} />
             </label>
             <label>Check-in date
-              <input type="date" value={f.check_in_date} onChange={set('check_in_date')} required />
+              <input type="date" value={f.check_in_date} onChange={setCheckIn} required />
             </label>
             <label>Check-in time
               <input type="time" value={f.check_in_time} onChange={set('check_in_time')} required />
             </label>
             <label>Checkout date
-              <input type="date" value={f.check_out_date} min={f.check_in_date} onChange={set('check_out_date')} required />
+              <input type="date" value={f.check_out_date} min={f.check_in_date} onChange={setCheckOut} required />
             </label>
             <label>Checkout time
               <input type="time" value={f.check_out_time} onChange={set('check_out_time')} required />
@@ -223,7 +366,36 @@ export default function CheckIn() {
         </section>
 
         <section className="card">
-          <h2>Guest</h2>
+          <div className="section-head">
+            <h2>Guest</h2>
+            <button type="button" className="btn btn-sm btn-dnr" onClick={checkDnr} disabled={dnrBusy}>
+              {dnrBusy ? 'Checking…' : '⛔ Check DNR list'}
+            </button>
+          </div>
+          {dnrResult && (
+            dnrResult.empty ? (
+              <div className="alert alert-info">Enter a name, phone or plate first, then check the DNR list.</div>
+            ) : dnrResult.matches.length ? (
+              <div className="alert alert-error dnr-result">
+                <strong>On the DNR list:</strong>
+                {dnrResult.matches.map((g) => (
+                  <div key={g.id} className="dnr-hit">
+                    <strong>{g.name}</strong>
+                    {g.phone && ` · ${g.phone}`}{g.license_plate && ` · ${g.license_plate}`}
+                    {g.dnr_reason && <> · <em>{g.dnr_reason}</em></>}
+                    <span className="tiny"> (matched on {g.matched_on.join(', ')})</span>
+                  </div>
+                ))}
+                {!dnrFresh && <div className="tiny">Details changed since this check. Check again.</div>}
+              </div>
+            ) : (
+              <div className={`alert ${dnrFresh ? 'alert-success' : 'alert-info'}`}>
+                {dnrFresh
+                  ? <>✓ Not on the DNR list (checked {dnrResult.checked.join(', ')}).</>
+                  : <>Details changed since the last DNR check. Check again.</>}
+              </div>
+            )
+          )}
           <div className="form-grid cols-4">
             <label className="span-2">Name
               <input value={f.name} onChange={set('name')} required />
@@ -261,20 +433,78 @@ export default function CheckIn() {
         <section className="card">
           <h2>Payment</h2>
           <div className="form-grid cols-4">
-            <label>Rate / night
+            <label>Rate per {rt.unit}
               <input type="number" step="0.01" min="0" value={f.rate} onChange={set('rate')} required />
             </label>
             <div className="readout">
-              <span>Total ({days} night{days > 1 ? 's' : ''})</span>
-              <strong>{money(total)}</strong>
+              <span>Room charge ({periodText(periods, f.rate_type)}{f.rate_type !== 'DAILY' ? `, ${days} nights` : ''})</span>
+              <strong>{money(roomCharge)}</strong>
             </div>
+            <div className="readout span-2 total-readout">
+              <span>Total</span>
+              <strong>{money(total)}</strong>
+              <span className="tiny muted">
+                Room {money(roomCharge)}
+                {charges > 0 && ` + charges ${money(charges)}`}
+                {num(f.adjustment) !== 0 && ` ${num(f.adjustment) > 0 ? '+' : '−'} ${money(Math.abs(num(f.adjustment)))} adj.`}
+              </span>
+            </div>
+
+            <div className="subhead span-4">Extra charges</div>
+            <label>Pets
+              <input type="number" min="0" value={f.pets} onChange={set('pets')} />
+              <span className="hint">{money(fees?.pet_fee)} per pet</span>
+            </label>
+            <label>Pet fee
+              <span className="fee-input">
+                <input type="number" step="0.01" min="0" value={feeValue('pet_fee', petFee)} onChange={setFee('pet_fee')} />
+                {f.pet_fee != null && !editing && <button type="button" className="fee-reset" title="Back to auto" onClick={() => resetFee('pet_fee')}>↺</button>}
+              </span>
+            </label>
+            <label>Extra persons
+              <span className="fee-input">
+                <input type="number" min="0" value={extraPersons} onChange={(e) => setF((p) => ({ ...p, extra_persons: Math.max(num(e.target.value), 0) }))} />
+                {f.extra_persons != null && !editing && <button type="button" className="fee-reset" title="Back to auto" onClick={() => resetFee('extra_persons')}>↺</button>}
+              </span>
+              <span className="hint">Guests above {included} are extra</span>
+            </label>
+            <label>Extra person fee
+              <span className="fee-input">
+                <input type="number" step="0.01" min="0" value={feeValue('extra_person_fee', extraFee)} onChange={setFee('extra_person_fee')} />
+                {f.extra_person_fee != null && !editing && <button type="button" className="fee-reset" title="Back to auto" onClick={() => resetFee('extra_person_fee')}>↺</button>}
+              </span>
+              <span className="hint">{money(fees?.extra_person_fee)} × {extraPersons} × {days} night{days > 1 ? 's' : ''}</span>
+            </label>
+            <label>Card fee
+              <span className="fee-input">
+                <input type="number" step="0.01" min="0" value={feeValue('card_fee', cardFee)} onChange={setFee('card_fee')} />
+                {f.card_fee != null && !editing && <button type="button" className="fee-reset" title="Back to auto" onClick={() => resetFee('card_fee')}>↺</button>}
+              </span>
+              <span className="hint">{editing ? 'Fee on card payments' : `${cardPct}% of the card amount`}</span>
+            </label>
+            <label>Late fee
+              <span className="fee-input">
+                <input type="number" step="0.01" min="0" value={f.late_fee} onChange={setFee('late_fee')} />
+                {lateFee > 0 && <button type="button" className="fee-reset" title="Remove late fee" onClick={() => setF((p) => ({ ...p, late_fee: 0 }))}>✕</button>}
+              </span>
+              {num(fees?.late_fee) > 0 && lateFee !== num(fees?.late_fee)
+                ? <button type="button" className="link-btn" onClick={() => setF((p) => ({ ...p, late_fee: num(fees.late_fee) }))}>Apply late fee {money(fees.late_fee)}</button>
+                : <span className="hint">{num(fees?.late_fee) > 0 ? 'Late checkout / late arrival' : 'Set a default in Charges & Fees'}</span>}
+            </label>
+            <div className="readout span-2">
+              <span>Total extra charges</span>
+              <strong>{money(charges)}</strong>
+            </div>
+
+            <div className="subhead span-4">Payment collected</div>
             {!editing ? (
               <>
                 <label>Cash
                   <input type="number" step="0.01" min="0" value={f.cash} onChange={set('cash')} placeholder="0.00" />
                 </label>
-                <label>Credit
+                <label>Credit / card
                   <input type="number" step="0.01" min="0" value={f.credit} onChange={set('credit')} placeholder="0.00" />
+                  <button type="button" className="link-btn" onClick={cardForBalance}>Put balance on card</button>
                 </label>
               </>
             ) : (
@@ -296,7 +526,7 @@ export default function CheckIn() {
             {num(f.adjustment) !== 0 && (
               <div className="adj-note span-4">
                 Balance edited: total includes {num(f.adjustment) > 0 ? 'an extra charge of' : 'a discount of'}{' '}
-                <strong>{money(Math.abs(num(f.adjustment)))}</strong> ({money(roomCharge)} room charge {num(f.adjustment) > 0 ? '+' : '−'} {money(Math.abs(num(f.adjustment)))} = {money(total)}).
+                <strong>{money(Math.abs(num(f.adjustment)))}</strong> ({money(roomCharge + charges)} room and charges {num(f.adjustment) > 0 ? '+' : '−'} {money(Math.abs(num(f.adjustment)))} = {money(total)}).
                 <button type="button" className="btn btn-sm ml" onClick={() => setF((p) => ({ ...p, adjustment: 0 }))}>Reset</button>
               </div>
             )}
@@ -313,7 +543,7 @@ export default function CheckIn() {
         <div className="form-actions sticky-actions">
           <button type="button" className="btn" onClick={() => navigate(-1)}>Cancel</button>
           <button className="btn btn-primary btn-lg" disabled={busy}>
-            {busy ? 'Saving…' : editing ? 'Save changes' : 'Check in guest'}
+            {busy ? 'Saving…' : editing ? 'Save changes' : renewOf ? 'Check out old stay & check in' : 'Check in guest'}
           </button>
         </div>
       </form>
@@ -334,6 +564,9 @@ export default function CheckIn() {
           <div className="alert alert-error">
             <strong>{dnrHit.name}</strong> is flagged <strong>Do Not Rent</strong>
             {dnrHit.self ? ' on this form.' : ` (phone ${dnrHit.phone || 'n/a'}, plate ${dnrHit.license_plate || 'n/a'}).`}
+            {dnrHit.dnr_reason && <div>Reason: <strong>{dnrHit.dnr_reason}</strong></div>}
+            {dnrHit.matched_on && <div className="tiny">Matched on {dnrHit.matched_on.join(', ')}</div>}
+            {dnrHit.matches?.length > 1 && <div className="tiny">{dnrHit.matches.length - 1} more match(es) on the DNR list.</div>}
           </div>
           <p>Do you still want to rent to this guest?</p>
           <div className="form-actions">

@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import { fmtDate, fmtTime, money, num } from '../utils'
+import { CurrentDay, DaysLeft } from './RoomSheet'
 import { BalanceCell, Empty, StatusPill } from './ui'
 
 /**
@@ -21,6 +22,8 @@ export default function StaysTable({ stays, actions = {}, empty = 'No guests.', 
             <th>Check-in</th>
             <th>Check-out</th>
             <th className="num">Days</th>
+            <th className="num">Current day</th>
+            <th>Days left</th>
             <th className="num">Total</th>
             <th className="num">Paid</th>
             <th className="num">Balance</th>
@@ -42,6 +45,8 @@ export default function StaysTable({ stays, actions = {}, empty = 'No guests.', 
                 {fmtDate(s.check_out_date)}<div className="tiny muted">{fmtTime(s.check_out_time)}</div>
               </td>
               <td className="num">{s.num_days}</td>
+              <td className="num"><CurrentDay stay={s} date={highlightDate} /></td>
+              <td><DaysLeft stay={s} date={highlightDate} /></td>
               <td className="num">{money(s.total_amount)}</td>
               <td className="num">{money(s.amount_paid)}</td>
               <td className="num"><BalanceCell value={s.balance} /></td>

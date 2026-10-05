@@ -50,3 +50,55 @@ export function money(v) {
 }
 
 export const num = (v) => Number(v || 0)
+
+export function addMonths(iso, n) {
+  const [y, m, d] = iso.split('-').map(Number)
+  const last = new Date(y, m - 1 + n + 1, 0).getDate() // last day of target month
+  const t = new Date(y, m - 1 + n, Math.min(d, last))
+  return new Date(t.getTime() - t.getTimezoneOffset() * 60000).toISOString().slice(0, 10)
+}
+
+export function monthsBetween(a, b) {
+  const [y1, m1, d1] = a.split('-').map(Number)
+  const [y2, m2, d2] = b.split('-').map(Number)
+  return Math.max((y2 - y1) * 12 + (m2 - m1) + (d2 > d1 ? 1 : 0), 1)
+}
+
+// Rent by: daily / weekly / monthly
+export const RATE_TYPES = [
+  { key: 'DAILY', label: 'Daily', unit: 'night', units: 'nights', count: 'No. of days', short: '/night' },
+  { key: 'WEEKLY', label: 'Weekly', unit: 'week', units: 'weeks', count: 'No. of weeks', short: '/week' },
+  { key: 'MONTHLY', label: 'Monthly', unit: 'month', units: 'months', count: 'No. of months', short: '/month' },
+]
+export const rateTypeInfo = (key) => RATE_TYPES.find((t) => t.key === key) || RATE_TYPES[0]
+
+/** Room-type rate for a rate type. Falls back to daily x 7 / x 30 when no weekly / monthly price is set. */
+export function rateFor(room, type) {
+  if (!room) return ''
+  const daily = Number(room.default_rate || 0)
+  if (type === 'WEEKLY') return (Number(room.weekly_rate || 0) || daily * 7).toFixed(2)
+  if (type === 'MONTHLY') return (Number(room.monthly_rate || 0) || daily * 30).toFixed(2)
+  return daily.toFixed(2)
+}
+
+export function periodText(n, type) {
+  const t = rateTypeInfo(type)
+  return `${n} ${n === 1 ? t.unit : t.units}`
+}
+
+/** Days left until checkout, counted from refDate (YYYY-MM-DD). Returns { text, tone }. */
+export function daysLeft(stay, refDate = todayISO()) {
+  if (stay.status === 'CHECKED_OUT') return { text: 'Checked out', tone: 'grey' }
+  const n = daysBetween(refDate, stay.check_out_date)
+  if (n < 0) return { text: `Overdue ${-n} day${n === -1 ? '' : 's'}`, tone: 'red' }
+  if (n === 0) return { text: 'Due today', tone: 'warn' }
+  if (n === 1) return { text: '1 day', tone: 'blue' }
+  return { text: `${n} days`, tone: n <= 2 ? 'blue' : 'green' }
+}
+
+/** Which day of the stay refDate is (check-in day = 1). null before arrival or after checkout. */
+export function dayOfStay(stay, refDate = todayISO()) {
+  if (stay.status === 'CHECKED_OUT') return null
+  const n = daysBetween(stay.check_in_date, refDate) + 1
+  return n >= 1 ? n : null
+}

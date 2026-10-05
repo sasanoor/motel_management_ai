@@ -8,9 +8,11 @@ Motel management system. Django REST + MySQL backend, React (Vite) frontend.
 |---|---|
 | Roles | Super Admin onboards motels (clients). Client Admin manages users, rooms, room types, rates, deleted guests. Client User checks in guests and takes payments. Maintenance sees only the day's checkout rooms and maintenance notes |
 | Guest onboarding | Room, check-in/out date and time (checkout 11 AM default), guests, days, name, address, city, state, zip, car, plate, phone, cash, credit, balance, clerk (auto), comments, do not rent |
-| Room rates | Default rate per room type, pre-filled at check-in, editable per guest. Total = rate × days |
+| Room rates | Daily, weekly and monthly rate per room type. At check-in pick Rent by Daily / Weekly / Monthly; rate pre-fills, checkout date is calculated, clerk can edit. Total = rate × nights / weeks / months |
 | Home screen | Date picker, today's checkouts, all guests staying on a date, occupancy and open balance stats, one-click checkout |
-| Do Not Rent | Warning popup when phone or plate matches a flagged guest; clerk decides. Returning guests autofill |
+| Extra charges | Pets (per pet, per stay), extra persons (per person, per night above included guests) card fee (% of card amount) and late fee (one click "Apply late fee", or offered at checkout when the guest is past checkout time). Defaults set in Charges & Fees, clerk can override at check-in. "Put balance on card" works out the card amount including the fee |
+| Do Not Rent | DNR List menu to add past customers directly (name, phone, plate, reason). Check-in has a Check DNR list button and checks automatically before saving; phone matches in any format, plate ignores spaces/dashes. Clerk decides. Returning guests autofill |
+| Early checkout & refunds | Checking out before the booked date opens an early checkout: pick the leaving date (same day = 1 night) and how to charge: nights used × daily rate (capped at the original charge), pro-rata (weekly / monthly), no refund, or a custom amount. Extra person fee is cut to the nights used; pet, card, late fees and discounts are kept. Shows new total, refund due or balance still owed; refund full or part, by cash or card. Room is free right away. Undo restores the booking (refund stays on record). Guests who overpaid get a Refund button. Refunds show as negative rows in Collections and Today's Report |
 | Balance payments | List of guests who owe money. Each payment adds to previous ones and rolls into the original check-in date report |
 | Delete / recover | Client admin soft-deletes guests; separate "Deleted Guests" menu to recover |
 | Reports | Daily check-ins, collections (cash vs credit), outstanding balances, occupancy. CSV export and print |
@@ -130,7 +132,7 @@ python manage.py test motel
 | `/api/clients/` (+ `/{id}/users/`) | Super admin |
 | `/api/users/` | Client admin |
 | `/api/room-types/`, `/api/rooms/` (+ `/rooms/board/?date=`) | Staff read, client admin write |
-| `/api/stays/` check-ins; `/{id}/payments/`, `/{id}/checkout/`, `/{id}/reopen/` | Staff |
+| `/api/stays/` check-ins; `/{id}/payments/`, `/{id}/checkout/` (optional `late_fee`), `/{id}/reopen/`, `/{id}/early_quote/?date=&method=`, `/{id}/early_checkout/`, `/{id}/refund/` | Staff |
 | `DELETE /api/stays/{id}/`, `/api/stays/deleted/`, `/{id}/restore/` | Client admin |
 | `/api/guests/` (+ `/check/?phone=&plate=`) | Staff |
 | `/api/dashboard/?date=` | Staff |

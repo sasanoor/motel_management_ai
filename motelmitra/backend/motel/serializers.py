@@ -14,7 +14,7 @@ class RoomTypeSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = RoomType
-        fields = ["id", "name", "default_rate", "description", "is_active", "room_count"]
+        fields = ["id", "name", "default_rate", "weekly_rate", "monthly_rate", "description", "is_active", "room_count"]
 
     def get_room_count(self, obj):
         return obj.rooms.filter(is_active=True).count()
@@ -34,10 +34,17 @@ class RoomSerializer(serializers.ModelSerializer):
     default_rate = serializers.DecimalField(
         source="room_type.default_rate", max_digits=10, decimal_places=2, read_only=True
     )
+    weekly_rate = serializers.DecimalField(
+        source="room_type.weekly_rate", max_digits=10, decimal_places=2, read_only=True
+    )
+    monthly_rate = serializers.DecimalField(
+        source="room_type.monthly_rate", max_digits=10, decimal_places=2, read_only=True
+    )
 
     class Meta:
         model = Room
-        fields = ["id", "number", "room_type", "room_type_name", "default_rate", "floor", "notes", "is_active"]
+        fields = ["id", "number", "room_type", "room_type_name", "default_rate", "weekly_rate", "monthly_rate",
+                  "floor", "notes", "is_active"]
 
     def validate_room_type(self, value):
         if value.client_id != self.context["request"].user.client_id:
@@ -57,13 +64,25 @@ class RoomSerializer(serializers.ModelSerializer):
 class GuestSerializer(serializers.ModelSerializer):
     stay_count = serializers.SerializerMethodField()
     last_stay = serializers.SerializerMethodField()
+    dnr_marked_by_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Guest
         fields = [
             "id", "name", "address", "city", "state", "zip_code", "phone", "car",
-            "license_plate", "do_not_rent", "stay_count", "last_stay", "created_at",
+            "license_plate", "do_not_rent", "dnr_reason", "dnr_marked_at", "dnr_marked_by_name",
+            "stay_count", "last_stay", "created_at",
         ]
+        read_only_fields = ["dnr_marked_at"]
+
+    def get_dnr_marked_by_name(self, obj):
+        u = obj.dnr_marked_by
+        return (u.get_full_name() or u.username) if u else ""
+
+    def validate_name(self, value):
+        if not value.strip():
+            raise serializers.ValidationError("Name is required.")
+        return value.strip()
 
     def get_stay_count(self, obj):
         return obj.stays.filter(is_deleted=False).count()
@@ -78,8 +97,8 @@ class PaymentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Payment
-        fields = ["id", "stay", "amount", "method", "paid_at", "clerk", "clerk_name", "is_initial", "notes"]
-        read_only_fields = ["stay", "paid_at", "clerk", "is_initial"]
+        fields = ["id", "stay", "amount", "method", "kind", "paid_at", "clerk", "clerk_name", "is_initial", "notes"]
+        read_only_fields = ["stay", "paid_at", "clerk", "is_initial", "kind"]
 
     def get_clerk_name(self, obj):
         return (obj.clerk.get_full_name() or obj.clerk.username) if obj.clerk else ""
@@ -100,10 +119,16 @@ def _money(obj, attr, fallback):
 class StaySerializer(serializers.ModelSerializer):
     """Read view of a stay, flat so tables are easy to render."""
 
+    room_charge = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
+    charges_total = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
+
     guest = GuestSerializer(read_only=True)
     room_number = serializers.CharField(source="room.number", read_only=True)
     room_type = serializers.CharField(source="room.room_type.name", read_only=True)
     clerk_name = serializers.SerializerMethodField()
+    renewed_to = serializers.SerializerMethodField()
+    early = serializers.SerializerMethodField()
+    refunded = serializers.SerializerMethodField()
     deleted_by_name = serializers.SerializerMethodField()
     amount_paid = serializers.SerializerMethodField()
     cash_paid = serializers.SerializerMethodField()
@@ -116,14 +141,36 @@ class StaySerializer(serializers.ModelSerializer):
         fields = [
             "id", "guest", "room", "room_number", "room_type",
             "check_in_date", "check_in_time", "check_out_date", "check_out_time",
-            "num_guests", "num_days", "rate", "adjustment", "total_amount",
+            "num_guests", "num_days", "rate_type", "periods", "rate", "room_charge", "adjustment",
+            "pets", "pet_fee", "extra_persons", "extra_person_fee", "card_fee", "late_fee",
+            "charges_total", "total_amount", "early", "refunded",
             "amount_paid", "cash_paid", "credit_paid", "balance",
-            "clerk", "clerk_name", "comments", "status", "checked_out_at",
+            "clerk", "clerk_name", "comments", "status", "checked_out_at", "renewed_from", "renewed_to",
             "is_deleted", "deleted_at", "deleted_by_name", "payments", "created_at",
         ]
 
     def get_clerk_name(self, obj):
         return (obj.clerk.get_full_name() or obj.clerk.username) if obj.clerk else ""
+
+    def get_early(self, obj):
+        """Early checkout details (booking as it was, and the refund), or None."""
+        snap = obj.early_snapshot
+        if not snap:
+            return None
+        return {
+            "original_check_out_date": snap.get("check_out_date"),
+            "original_nights": snap.get("nights"),
+            "original_room_charge": snap.get("room_charge"),
+            "original_total": snap.get("total"),
+            "method": snap.get("method"),
+        }
+
+    def get_refunded(self, obj):
+        return str(-sum((p.amount for p in obj.payments.all() if p.kind == Payment.REFUND), ZERO))
+
+    def get_renewed_to(self, obj):
+        nxt = obj.renewals.filter(is_deleted=False).order_by("id").first()
+        return nxt.id if nxt else None
 
     def get_deleted_by_name(self, obj):
         return (obj.deleted_by.get_full_name() or obj.deleted_by.username) if obj.deleted_by else ""
@@ -171,13 +218,17 @@ class StayWriteSerializer(serializers.ModelSerializer):
 
     rate = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)
     allow_overlap = serializers.BooleanField(required=False, default=False, write_only=True)
+    # "Check out & check in again": id of the stay being checked out and renewed
+    renew_from = serializers.IntegerField(required=False, allow_null=True, write_only=True)
+    periods = serializers.IntegerField(required=False, allow_null=True, min_value=1)
 
     class Meta:
         model = Stay
         fields = [
             "id", "room", "check_in_date", "check_in_time", "check_out_date", "check_out_time",
-            "num_guests", "rate", "adjustment", "comments",
-            "guest_id", *GUEST_FIELDS, "cash", "credit", "allow_overlap",
+            "num_guests", "rate_type", "periods", "rate", "adjustment", "pets", "pet_fee", "extra_persons", "extra_person_fee", "card_fee",
+            "late_fee", "comments",
+            "guest_id", *GUEST_FIELDS, "cash", "credit", "allow_overlap", "renew_from",
         ]
 
     def validate_room(self, room):
@@ -198,7 +249,19 @@ class StayWriteSerializer(serializers.ModelSerializer):
         if cin and cout:
             rate = attrs.get("rate", inst.rate if inst else None)
             adj = attrs.get("adjustment", inst.adjustment if inst else ZERO) or ZERO
-            if rate is not None and rate * max((cout - cin).days, 1) + adj < 0:
+            rate_type = attrs.get("rate_type", inst.rate_type if inst else Stay.DAILY)
+            given = attrs.get("periods")
+            if given is None and inst and inst.rate_type == rate_type:
+                given = inst.periods  # editing other fields keeps the clerk's week / month count
+            periods = Stay.calc_periods(rate_type, cin, cout, given)
+            attrs["periods"] = periods
+            fees = ZERO
+            for f in ("pet_fee", "extra_person_fee", "card_fee", "late_fee"):
+                v = attrs.get(f, getattr(inst, f) if inst else ZERO) or ZERO
+                if v < 0:
+                    raise serializers.ValidationError({f: "Cannot be negative."})
+                fees += v
+            if rate is not None and rate * periods + fees + adj < 0:
                 raise serializers.ValidationError({"balance": "Total cannot go below zero."})
         if room and cin and cout:
             end = cout if cout > cin else cin + timezone.timedelta(days=1)
@@ -208,6 +271,8 @@ class StayWriteSerializer(serializers.ModelSerializer):
             )
             if inst:
                 clash = clash.exclude(pk=inst.pk)
+            if attrs.get("renew_from"):
+                clash = clash.exclude(pk=attrs["renew_from"])  # the stay being renewed is checked out on save
             other = clash.select_related("guest").first()
             if other and not attrs.get("allow_overlap"):
                 # The clerk can confirm and rent the same room again (allow_overlap=true).
@@ -226,6 +291,13 @@ class StayWriteSerializer(serializers.ModelSerializer):
         request = self.context["request"]
         client = request.user.client
         guest_id = attrs.pop("guest_id", None)
+        old = None
+        renew_id = attrs.pop("renew_from", None)
+        if renew_id:
+            old = Stay.objects.filter(client=client, pk=renew_id, is_deleted=False).first()
+            if old is None:
+                raise serializers.ValidationError({"renew_from": "Stay to renew not found."})
+            guest_id = guest_id or old.guest_id
         guest_data = self._guest_data(attrs)
         cash = attrs.pop("cash", ZERO) or ZERO
         credit = attrs.pop("credit", ZERO) or ZERO
@@ -242,9 +314,17 @@ class StayWriteSerializer(serializers.ModelSerializer):
         guest.save()
 
         if "rate" not in attrs or attrs["rate"] is None:
-            attrs["rate"] = attrs["room"].room_type.default_rate
+            rt = attrs["room"].room_type
+            attrs["rate"] = {
+                Stay.WEEKLY: rt.weekly_rate or rt.default_rate * 7,
+                Stay.MONTHLY: rt.monthly_rate or rt.default_rate * 30,
+            }.get(attrs.get("rate_type", Stay.DAILY), rt.default_rate)
 
-        stay = Stay.objects.create(client=client, guest=guest, clerk=request.user, **attrs)
+        stay = Stay.objects.create(client=client, guest=guest, clerk=request.user, renewed_from=old, **attrs)
+        if old and old.status == Stay.CHECKED_IN:
+            old.status = Stay.CHECKED_OUT
+            old.checked_out_at = timezone.now()
+            old.save()
         now = timezone.now()
         for amount, method in ((cash, Payment.CASH), (credit, Payment.CREDIT)):
             if amount > 0:
@@ -257,6 +337,7 @@ class StayWriteSerializer(serializers.ModelSerializer):
     @transaction.atomic
     def update(self, stay, attrs):
         attrs.pop("guest_id", None)
+        attrs.pop("renew_from", None)
         attrs.pop("cash", None)
         attrs.pop("credit", None)
         guest_data = self._guest_data(attrs)

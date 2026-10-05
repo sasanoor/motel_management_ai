@@ -109,3 +109,15 @@ class LoginSerializer(TokenObtainPairSerializer):
             )
         data["user"] = UserSerializer(user).data
         return data
+
+
+class MotelSettingsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Client
+        fields = ["id", "name", "card_fee_percent", "pet_fee", "extra_person_fee", "included_guests", "late_fee"]
+        read_only_fields = ["id", "name"]
+
+    def validate_card_fee_percent(self, v):
+        if v < 0 or v > 20:
+            raise serializers.ValidationError("Card fee must be between 0 and 20%.")
+        return v

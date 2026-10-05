@@ -1,6 +1,6 @@
 import { Fragment } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { fmtDate, fmtTime, money, num } from '../utils'
+import { dayOfStay, daysLeft, fmtDate, fmtTime, money, num, rateTypeInfo } from '../utils'
 import { BalanceCell, Empty } from './ui'
 
 /**
@@ -39,6 +39,8 @@ export default function RoomSheet({ date, rooms, stays, onPay, onCheckout }) {
             <th>Guest</th>
             <th>Check-in → Check-out</th>
             <th className="num">Days</th>
+            <th className="num">Current day</th>
+            <th>Days left</th>
             <th className="num">Total</th>
             <th className="num">Paid</th>
             <th className="num">Balance</th>
@@ -53,7 +55,7 @@ export default function RoomSheet({ date, rooms, stays, onPay, onCheckout }) {
               {list.length === 0 ? (
                 <tr>
                   <td><span className="room-chip">{room.number}</span><div className="tiny muted">{room.room_type}</div></td>
-                  <td colSpan={6} className="muted vacant-cell">Vacant · {money(room.default_rate)}</td>
+                  <td colSpan={8} className="muted vacant-cell">Vacant · {money(room.default_rate)}</td>
                   <td><span className="pill pill-grey">Vacant</span></td>
                   <td className="row-actions">
                     <button className="btn btn-sm btn-primary" onClick={() => checkIn(room)}>Check in</button>
@@ -76,7 +78,9 @@ export default function RoomSheet({ date, rooms, stays, onPay, onCheckout }) {
                         <div className="tiny muted">{fmtTime(s.check_in_time)} → {fmtTime(s.check_out_time)}</div>
                       </td>
                       <td className="num">{s.num_days}</td>
-                      <td className="num">{money(s.total_amount)}<div className="tiny muted">{money(s.rate)}/night</div></td>
+                      <td className="num"><CurrentDay stay={s} date={date} /></td>
+                      <td><DaysLeft stay={s} date={date} /></td>
+                      <td className="num">{money(s.total_amount)}<div className="tiny muted">{money(s.rate)}{rateTypeInfo(s.rate_type).short}</div></td>
                       <td className="num">{money(s.amount_paid)}</td>
                       <td className="num"><BalanceCell value={s.balance} /></td>
                       <td>{label(s)}</td>
@@ -88,7 +92,7 @@ export default function RoomSheet({ date, rooms, stays, onPay, onCheckout }) {
                     {i === list.length - 1 && freeTonight(list) && (
                       <tr className="rent-again">
                         <td></td>
-                        <td colSpan={7} className="muted vacant-cell">Free for tonight</td>
+                        <td colSpan={9} className="muted vacant-cell">Free for tonight</td>
                         <td className="row-actions">
                           <button className="btn btn-sm btn-primary" onClick={() => checkIn(room)}>Check in</button>
                         </td>
@@ -103,4 +107,21 @@ export default function RoomSheet({ date, rooms, stays, onPay, onCheckout }) {
       </table>
     </div>
   )
+}
+
+export function DaysLeft({ stay, date }) {
+  const d = daysLeft(stay, date)
+  return <span className={`days-left dl-${d.tone}`}>{d.text}</span>
+}
+
+export function CurrentDay({ stay, date }) {
+  const n = dayOfStay(stay, date)
+  if (n == null) return <span className="muted">—</span>
+  if (n > stay.num_days) {
+    // past the last night: checkout morning (or later if not checked out yet)
+    return n === stay.num_days + 1
+      ? <span className="tiny cur-out">Checkout day</span>
+      : <span className="cur-day cur-over"><strong>{n}</strong></span>
+  }
+  return <span className="cur-day"><strong>{n}</strong><span className="tiny muted"> of {stay.num_days}</span></span>
 }

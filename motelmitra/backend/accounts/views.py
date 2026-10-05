@@ -1,13 +1,13 @@
 from rest_framework import status, viewsets
-from rest_framework.decorators import action, api_view
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import Client, User
-from .permissions import IsClientAdmin, IsSuperAdmin
+from .permissions import IsClientAdmin, IsClientStaff, IsSuperAdmin
 from .serializers import (
-    ClientOnboardSerializer, ClientSerializer, LoginSerializer, UserSerializer,
+    ClientOnboardSerializer, ClientSerializer, LoginSerializer, MotelSettingsSerializer, UserSerializer,
 )
 
 
@@ -69,3 +69,18 @@ class UserViewSet(viewsets.ModelViewSet):
         user.is_active = False
         user.save()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+@api_view(["GET", "PATCH"])
+@permission_classes([IsClientStaff])
+def motel_settings(request):
+    """Charges & fees for the logged-in user's motel. Everyone on staff can read; only the admin can change."""
+    client = request.user.client
+    if request.method == "PATCH":
+        if request.user.role != User.CLIENT_ADMIN:
+            return Response({"detail": "Only the client admin can change charges."}, status=status.HTTP_403_FORBIDDEN)
+        ser = MotelSettingsSerializer(client, data=request.data, partial=True)
+        ser.is_valid(raise_exception=True)
+        ser.save()
+        return Response(ser.data)
+    return Response(MotelSettingsSerializer(client).data)

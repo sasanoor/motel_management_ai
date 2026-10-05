@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import api, { errorText } from '../api'
 import { useAuth } from '../auth'
 import { Alert, BalanceCell, Empty, PageHead, Stat } from '../components/ui'
-import { addDays, fmtDate, fmtDateTime, money, todayISO } from '../utils'
+import { addDays, fmtDate, fmtDateTime, money, todayISO, rateTypeInfo } from '../utils'
 
 const TABS = [
   { key: 'checkins', label: 'Daily Check-ins', range: true },
@@ -58,8 +58,8 @@ export default function Reports() {
   function exportCSV() {
     if (!data) return
     if (tab === 'checkins') downloadCSV(`checkins_${start}_${end}`,
-      ['Check-in', 'Room', 'Type', 'Guest', 'Guests', 'Days', 'Rate', 'Total', 'Cash', 'Credit', 'Balance', 'Clerk'],
-      data.rows.map((r) => [r.check_in_date, r.room_number, r.room_type, r.guest_name, r.num_guests, r.num_days, r.rate, r.total, r.cash, r.credit, r.balance, r.clerk]))
+      ['Check-in', 'Room', 'Type', 'Guest', 'Guests', 'Days', 'Rate', 'Fees', 'Total', 'Cash', 'Credit', 'Balance', 'Clerk'],
+      data.rows.map((r) => [r.check_in_date, r.room_number, r.room_type, r.guest_name, r.num_guests, r.num_days, r.rate, r.fees, r.total, r.cash, r.credit, r.balance, r.clerk]))
     if (tab === 'collections') downloadCSV(`collections_${start}_${end}`,
       ['Paid at', 'Type', 'Method', 'Amount', 'Guest', 'Room', 'Check-in date', 'Clerk'],
       data.payments.map((p) => [p.paid_at, p.type, p.method, p.amount, p.guest_name, p.room_number, p.check_in_date, p.clerk]))
@@ -119,7 +119,7 @@ export default function Reports() {
             {!data.rows.length ? <Empty>No check-ins in this period.</Empty> : (
               <div className="table-wrap">
                 <table className="table">
-                  <thead><tr><th>Check-in</th><th>Room</th><th>Guest</th><th className="num">Guests</th><th className="num">Days</th><th className="num">Rate</th><th className="num">Total</th><th className="num">Cash</th><th className="num">Credit</th><th className="num">Balance</th><th>Clerk</th></tr></thead>
+                  <thead><tr><th>Check-in</th><th>Room</th><th>Guest</th><th className="num">Guests</th><th className="num">Days</th><th className="num">Rate</th><th className="num">Fees</th><th className="num">Total</th><th className="num">Cash</th><th className="num">Credit</th><th className="num">Balance</th><th>Clerk</th></tr></thead>
                   <tbody>
                     {data.rows.map((r) => (
                       <tr key={r.id} className={isSuper ? '' : 'clickable'} onClick={() => open(r.id)}>
@@ -128,7 +128,8 @@ export default function Reports() {
                         <td>{r.guest_name}</td>
                         <td className="num">{r.num_guests}</td>
                         <td className="num">{r.num_days}</td>
-                        <td className="num">{money(r.rate)}</td>
+                        <td className="num">{money(r.rate)}<span className="tiny muted">{rateTypeInfo(r.rate_type).short}</span></td>
+                        <td className="num">{money(r.fees)}</td>
                         <td className="num">{money(r.total)}</td>
                         <td className="num">{money(r.cash)}</td>
                         <td className="num">{money(r.credit)}</td>
@@ -138,7 +139,7 @@ export default function Reports() {
                     ))}
                   </tbody>
                   <tfoot>
-                    <tr><td colSpan={6}>Total</td><td className="num">{money(data.totals.total)}</td><td className="num">{money(data.totals.cash)}</td><td className="num">{money(data.totals.credit)}</td><td className="num">{money(data.totals.balance)}</td><td></td></tr>
+                    <tr><td colSpan={7}>Total</td><td className="num">{money(data.totals.total)}</td><td className="num">{money(data.totals.cash)}</td><td className="num">{money(data.totals.credit)}</td><td className="num">{money(data.totals.balance)}</td><td></td></tr>
                   </tfoot>
                 </table>
               </div>
@@ -150,18 +151,19 @@ export default function Reports() {
       {data && tab === 'collections' && (
         <>
           <div className="stats">
-            <Stat label="Cash collected" value={money(data.totals.cash)} />
-            <Stat label="Credit collected" value={money(data.totals.credit)} />
-            <Stat label="Total collected" value={money(data.totals.total)} tone="good" />
+            <Stat label="Cash (net)" value={money(data.totals.cash)} />
+            <Stat label="Credit (net)" value={money(data.totals.credit)} />
+            <Stat label="Refunds given" value={money(data.totals.refunds)} tone={Number(data.totals.refunds) > 0 ? 'bad' : ''} />
+            <Stat label="Net collected" value={money(data.totals.total)} tone="good" />
             <Stat label="Payments" value={data.payments.length} />
           </div>
           <div className="card no-pad">
             {!data.days.length ? <Empty>No payments in this period.</Empty> : (
               <table className="table">
-                <thead><tr><th>Date</th><th className="num">Payments</th><th className="num">Cash</th><th className="num">Credit</th><th className="num">Total</th></tr></thead>
+                <thead><tr><th>Date</th><th className="num">Payments</th><th className="num">Cash</th><th className="num">Credit</th><th className="num">Refunds</th><th className="num">Net total</th></tr></thead>
                 <tbody>
                   {data.days.map((d) => (
-                    <tr key={d.date}><td>{fmtDate(d.date)}</td><td className="num">{d.count}</td><td className="num">{money(d.cash)}</td><td className="num">{money(d.credit)}</td><td className="num"><strong>{money(d.total)}</strong></td></tr>
+                    <tr key={d.date}><td>{fmtDate(d.date)}</td><td className="num">{d.count}</td><td className="num">{money(d.cash)}</td><td className="num">{money(d.credit)}</td><td className="num">{Number(d.refunds) > 0 ? <span className="owed">−{money(d.refunds)}</span> : money(0)}</td><td className="num"><strong>{money(d.total)}</strong></td></tr>
                   ))}
                 </tbody>
               </table>
@@ -176,7 +178,7 @@ export default function Reports() {
                     <thead><tr><th>Paid at</th><th>Type</th><th>Method</th><th className="num">Amount</th><th>Guest</th><th>Room</th><th>Check-in date</th><th>Clerk</th></tr></thead>
                     <tbody>
                       {data.payments.map((p) => (
-                        <tr key={p.id}>
+                        <tr key={p.id} className={p.type === 'Refund' ? 'refund-row' : ''}>
                           <td>{fmtDateTime(p.paid_at)}</td><td>{p.type}</td><td>{p.method === 'CASH' ? 'Cash' : 'Credit'}</td>
                           <td className="num">{money(p.amount)}</td><td>{p.guest_name}</td><td>{p.room_number}</td>
                           <td>{fmtDate(p.check_in_date)}</td><td>{p.clerk}</td>

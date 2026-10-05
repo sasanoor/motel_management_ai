@@ -15,6 +15,15 @@ class Client(models.Model):
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    # Charges & fees (defaults pre-filled at check-in; clerk can change per guest)
+    card_fee_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0,
+                                           help_text="Card payment fee, % of the card amount")
+    pet_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0, help_text="Per pet, per stay")
+    extra_person_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0,
+                                           help_text="Per extra person, per night")
+    included_guests = models.PositiveSmallIntegerField(default=2, help_text="Guests included in the room rate")
+    late_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0, help_text="Late checkout fee")
+
     class Meta:
         ordering = ["name"]
 

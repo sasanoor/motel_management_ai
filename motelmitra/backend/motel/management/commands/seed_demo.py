@@ -24,7 +24,9 @@ class Command(BaseCommand):
         client, _ = Client.objects.get_or_create(
             name="Sunset Motel",
             defaults={"address": "100 Highway 66", "city": "Amarillo", "state": "TX",
-                      "zip_code": "79101", "phone": "806-555-0100"},
+                      "zip_code": "79101", "phone": "806-555-0100",
+                      "card_fee_percent": Decimal("3.00"), "pet_fee": Decimal("25"),
+                      "extra_person_fee": Decimal("10"), "included_guests": 2},
         )
         admin, created = User.objects.get_or_create(
             username="owner", defaults={"client": client, "role": User.CLIENT_ADMIN, "first_name": "Raj"}
@@ -47,10 +49,12 @@ class Command(BaseCommand):
             maint.save()
 
         types = {}
-        for name, rate in [("King", 69), ("Queen", 59), ("Double", 75), ("Suite", 110),
-                           ("Jacuzzi", 129), ("Handicap", 59)]:
+        for name, rate, week, month in [("King", 69, 399, 1299), ("Queen", 59, 349, 1099),
+                                         ("Double", 75, 449, 1399), ("Suite", 110, 649, 1999),
+                                         ("Jacuzzi", 129, 749, 2399), ("Handicap", 59, 349, 1099)]:
             types[name], _ = RoomType.objects.get_or_create(
-                client=client, name=name, defaults={"default_rate": Decimal(rate)}
+                client=client, name=name,
+                defaults={"default_rate": Decimal(rate), "weekly_rate": Decimal(week), "monthly_rate": Decimal(month)},
             )
         layout = {"King": range(101, 106), "Queen": range(106, 111), "Double": range(201, 206),
                   "Suite": [206, 207], "Jacuzzi": [208], "Handicap": [100]}

@@ -4,10 +4,11 @@ import Layout from './components/Layout'
 import CheckIn from './pages/CheckIn'
 import Dashboard from './pages/Dashboard'
 import Deleted from './pages/Deleted'
+import Dnr from './pages/Dnr'
 import Login from './pages/Login'
 import Maintenance from './pages/Maintenance'
 import Reports from './pages/Reports'
-import { Clients, Directory, RoomTypes, Rooms, Users } from './pages/Setup'
+import { ChargesSettings, Clients, Directory, RoomTypes, Rooms, Users } from './pages/Setup'
 import StayDetail from './pages/StayDetail'
 import TodayReport from './pages/TodayReport'
 import Stays from './pages/Stays'
@@ -44,10 +45,12 @@ export default function App() {
         <Route path="stays/:id/edit" element={<Guard allow={STAFF}><CheckIn /></Guard>} />
         <Route path="balances" element={<Guard allow={STAFF}><Stays balancesOnly /></Guard>} />
         <Route path="directory" element={<Guard allow={STAFF}><Directory /></Guard>} />
+        <Route path="dnr" element={<Guard allow={STAFF}><Dnr /></Guard>} />
         <Route path="today" element={<Guard allow={STAFF}><TodayReport /></Guard>} />
         <Route path="reports" element={<Reports />} />
         <Route path="rooms" element={<Guard allow={ADMIN}><Rooms /></Guard>} />
         <Route path="room-types" element={<Guard allow={ADMIN}><RoomTypes /></Guard>} />
+        <Route path="charges" element={<Guard allow={ADMIN}><ChargesSettings /></Guard>} />
         <Route path="users" element={<Guard allow={ADMIN}><Users /></Guard>} />
         <Route path="deleted" element={<Guard allow={ADMIN}><Deleted /></Guard>} />
         <Route path="clients" element={<Guard allow={SUPER}><Clients /></Guard>} />

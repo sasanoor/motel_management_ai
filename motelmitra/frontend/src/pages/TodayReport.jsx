@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import api, { errorText } from '../api'
 import { useAuth } from '../auth'
 import { Alert, BalanceCell, Empty, PageHead, Stat } from '../components/ui'
-import { addDays, fmtDate, fmtDateTime, fmtTime, money, num, todayISO } from '../utils'
+import { addDays, fmtDate, fmtDateTime, fmtTime, money, num, todayISO, rateTypeInfo } from '../utils'
 
 /** End-of-day / shift handover report for the front desk. */
 export default function TodayReport() {
@@ -33,8 +33,8 @@ export default function TodayReport() {
       >
         <div className="date-nav no-print">
           <button className="btn" onClick={() => setDate(addDays(date, -1))}>‹</button>
-          <input type="date" value={date} max={todayISO()} onChange={(e) => e.target.value && setDate(e.target.value)} />
-          <button className="btn" onClick={() => setDate(addDays(date, 1))} disabled={isToday}>›</button>
+          <input type="date" value={date} onChange={(e) => e.target.value && setDate(e.target.value)} />
+          <button className="btn" onClick={() => setDate(addDays(date, 1))}>›</button>
           {!isToday && <button className="btn" onClick={() => setDate(todayISO())}>Today</button>}
         </div>
         <button className="btn" onClick={() => window.print()}>Print</button>
@@ -58,6 +58,7 @@ export default function TodayReport() {
             <Stat label="Cash collected" value={money(d.money.cash)} tone="good" />
             <Stat label="Credit collected" value={money(d.money.credit)} />
             <Stat label="Total collected" value={money(d.money.collected)} tone="good" />
+            {num(d.money.refunds) > 0 && <Stat label="Refunds given (included above)" value={money(d.money.refunds)} tone="bad" />}
             <Stat label="From today's check-ins" value={money(d.money.from_todays_checkins)} />
             <Stat label="Balance payments (earlier stays)" value={money(d.money.from_earlier_stays)} />
             <Stat label="Unpaid from today's check-ins" value={money(d.money.unpaid_from_todays_checkins)} tone={num(d.money.unpaid_from_todays_checkins) > 0 ? 'bad' : ''} />
@@ -107,7 +108,7 @@ export default function TodayReport() {
                         <td className="num">{r.num_guests}</td>
                         <td className="num">{r.num_days}</td>
                         <td>{fmtDate(r.check_out_date)}</td>
-                        <td className="num">{money(r.rate)}</td>
+                        <td className="num">{money(r.rate)}<span className="tiny muted">{rateTypeInfo(r.rate_type).short}</span></td>
                         <td className="num">{money(r.total)}</td>
                         <td className="num">{money(r.cash)}</td>
                         <td className="num">{money(r.credit)}</td>
@@ -153,7 +154,7 @@ export default function TodayReport() {
                   <thead><tr><th>Time</th><th>Type</th><th>Method</th><th className="num">Amount</th><th>Guest</th><th>Room</th><th>Check-in date</th><th>Clerk</th></tr></thead>
                   <tbody>
                     {d.payments.map((p) => (
-                      <tr key={p.id} className="clickable" onClick={() => open(p.stay_id)}>
+                      <tr key={p.id} className={`clickable ${p.type === 'Refund' ? 'refund-row' : ''}`} onClick={() => open(p.stay_id)}>
                         <td>{fmtDateTime(p.paid_at)}</td>
                         <td>{p.type}</td>
                         <td>{p.method === 'CASH' ? 'Cash' : 'Credit'}</td>
