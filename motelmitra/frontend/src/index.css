@@ -491,3 +491,6 @@ input.input-owed { color: var(--red); font-weight: 700; }
 .scan-pick img, .scan-pick .auth-img { width: 100%; height: 100px; object-fit: cover; border-radius: 6px; }
 .scanner-card { margin-top: 20px; max-width: 760px; }
 .scanner-test { margin-top: 8px; }
+.pay-collected { margin-top: 6px; }
+.modal .form-grid.cols-4 + .form-grid { margin-top: 10px; }
+@media (max-width: 760px) { .modal .form-grid.cols-4 { grid-template-columns: 1fr 1fr; } .modal .form-grid.cols-4 .span-4 { grid-column: span 2; } }

@@ -562,6 +562,14 @@ class AddStayTests(APITestCase):
         r = self.client.post(f"/api/stays/{w['id']}/extend/", {"periods": 1}, format="json")
         self.assertEqual((r.data["periods"], r.data["num_days"], r.data["total_amount"]), (2, 14, "600.00"))
         self.assertEqual(self.client.post(f"/api/stays/{w['id']}/extend/", {"periods": 0}, format="json").status_code, 400)
+        # balance edited in the Add stay window (same as check-in): discount saved on the stay
+        r = self.client.post(f"/api/stays/{w['id']}/extend/", {"periods": 1, "cash": "850", "adjustment_change": "-50"}, format="json")
+        self.assertEqual((r.status_code, r.data["total_amount"], r.data["balance"]), (200, "850.00", "0.00"))
+        self.assertIn("Discount of 50.00", r.data["comments"])
+        # discount bigger than the total is refused and nothing changes
+        r = self.client.post(f"/api/stays/{w['id']}/extend/", {"periods": 1, "adjustment_change": "-5000"}, format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(self.client.get(f"/api/stays/{w['id']}/").data["periods"], 3)
 
 
 class PaginationAndHistoryTests(APITestCase):

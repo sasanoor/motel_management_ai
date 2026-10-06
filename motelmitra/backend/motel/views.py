@@ -549,8 +549,8 @@ class StayViewSet(viewsets.ModelViewSet):
     def extend(self, request, pk=None):
         """
         Add stay: guest stays longer (usually paying in advance). Same entry, same rate.
-        Body: periods (nights / weeks / months by the stay's rent type), cash, credit, card_fee, notes,
-              allow_overlap (rent anyway if the room is booked after the current checkout).
+        Body: periods (nights / weeks / months by the stay's rent type), cash, credit, card_fee,
+              adjustment_change (balance edited, like check-in), notes, allow_overlap (rent anyway if the room is booked after the current checkout).
         """
         stay = self.get_object()
         if stay.status != Stay.CHECKED_IN:
@@ -585,6 +585,10 @@ class StayViewSet(viewsets.ModelViewSet):
         fee = _decimal(request.data.get("card_fee") or 0, "card_fee")
         if fee > 0 and credit <= 0:
             raise ValidationError({"card_fee": "Card fee needs a card amount."})
+        try:
+            adj = Decimal(str(request.data.get("adjustment_change") or 0)).quantize(Decimal("0.01"))
+        except Exception:
+            raise ValidationError({"balance": "Enter a valid balance."})
         notes = (request.data.get("notes") or "").strip()[:255]
         unit = {Stay.DAILY: "night", Stay.WEEKLY: "week", Stay.MONTHLY: "month"}[stay.rate_type]
 
@@ -597,9 +601,14 @@ class StayViewSet(viewsets.ModelViewSet):
                 stay.periods = stay.periods + n
             stay.check_out_date = new_out
             stay.card_fee = (stay.card_fee or ZERO) + fee
-            stay.comments = (stay.comments + "\n" if stay.comments else "") + (
-                f"Stay added: {n} {unit}{'s' if n > 1 else ''}, checkout {old_out:%m/%d/%Y} -> {new_out:%m/%d/%Y}.")
+            stay.adjustment = (stay.adjustment or ZERO) + adj
+            line = f"Stay added: {n} {unit}{'s' if n > 1 else ''}, checkout {old_out:%m/%d/%Y} -> {new_out:%m/%d/%Y}."
+            if adj != 0:
+                line += f" {'Discount' if adj < 0 else 'Extra charge'} of {abs(adj)} added."
+            stay.comments = (stay.comments + "\n" if stay.comments else "") + line
             stay.save()
+            if stay_qs(request.user.client).get(pk=stay.pk).total_amount < 0:
+                raise ValidationError({"balance": "Total cannot go below zero."})
             now = timezone.now()
             for amt, method in ((cash, Payment.CASH), (credit, Payment.CREDIT)):
                 if amt > 0:

@@ -1,5 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import api, { errorText } from '../api'
+import usePayment from '../usePayment'
+import PaymentCollected from './PaymentCollected'
 import { money, num } from '../utils'
 
 export function Modal({ title, onClose, children, width = 520 }) {
@@ -68,58 +70,20 @@ export function Empty({ children }) {
 }
 
 /** Add a balance payment to a stay. */
-/**
- * Balance payment, laid out like the check-in "Payment collected" section:
- * cash and / or card, card fee on the card amount, "Put balance on card".
- */
+/** Balance payment: same "Extra charges" + "Payment collected" layout as the check-in page. */
 export function PaymentModal({ stay, onClose, onSaved }) {
   const owed = Math.max(num(stay.balance), 0)
-  const [cash, setCash] = useState(owed ? owed.toFixed(2) : '')
-  const [credit, setCredit] = useState('')
-  const [fee, setFee] = useState(null)            // null = auto (% of card amount)
-  const [pct, setPct] = useState(0)
-  const [adj, setAdj] = useState(0)              // balance edited: + extra charge, - discount
-  const [balanceText, setBalanceText] = useState(null)
+  const p = usePayment(owed, { initialCash: owed ? owed.toFixed(2) : '' })
   const [notes, setNotes] = useState('')
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
-
-  useEffect(() => { api.get('/settings/').then((r) => setPct(num(r.data.card_fee_percent))).catch(() => {}) }, [])
-
-  const r2 = (n) => Math.round(n * 100) / 100
-  const cardFee = fee ?? r2((num(credit) * pct) / 100)
-  const base = r2(num(stay.balance) + cardFee - num(cash) - num(credit))   // balance before any edit
-  const after = r2(base + adj)
-  const paying = num(cash) + num(credit)
-
-  // Clerk types a balance: keep the payment, store the difference as an adjustment (same as check-in).
-  function editBalance(e) {
-    const text = e.target.value
-    setBalanceText(text)
-    if (text === '' || isNaN(Number(text))) return
-    setAdj(r2(Number(text) - base))
-  }
-
-  function balanceInCash() {
-    setCash(Math.max(r2(owed + adj + cardFee - num(credit)), 0).toFixed(2))
-  }
-
-  function balanceOnCard() {
-    const due = owed + adj - num(cash)
-    if (due <= 0) return
-    const c = fee == null ? due / (1 - pct / 100) : due + num(fee)
-    setCredit(r2(c).toFixed(2))
-  }
-  // balance edit is applied last: changing cash / card / fee clears it so it never goes stale
 
   async function save(e) {
     e.preventDefault()
     setBusy(true)
     setErr('')
     try {
-      const { data } = await api.post(`/stays/${stay.id}/payments/`, {
-        cash: num(cash).toFixed(2), credit: num(credit).toFixed(2), card_fee: cardFee.toFixed(2), adjustment_change: adj.toFixed(2), notes,
-      })
+      const { data } = await api.post(`/stays/${stay.id}/payments/`, { ...p.body(), notes })
       onSaved(data)
     } catch (e2) {
       setErr(errorText(e2))
@@ -128,58 +92,24 @@ export function PaymentModal({ stay, onClose, onSaved }) {
   }
 
   return (
-    <Modal title={`Payment: ${stay.guest.name}, Room ${stay.room_number}`} onClose={onClose} width={600}>
+    <Modal title={`Payment: ${stay.guest.name}, Room ${stay.room_number}`} onClose={onClose} width={860}>
       <div className="pay-summary">
         <div><span>Total</span><strong>{money(stay.total_amount)}</strong></div>
         <div><span>Paid</span><strong>{money(stay.amount_paid)}</strong></div>
         <div><span>Balance</span><strong className="owed">{money(stay.balance)}</strong></div>
       </div>
       <Alert>{err}</Alert>
-      <form onSubmit={save} className="form-grid cols-2">
-        <div className="subhead span-2">Payment collected</div>
-        <label>Cash
-          <input type="number" step="0.01" min="0" value={cash} onChange={(e) => { setCash(e.target.value); setAdj(0) }} placeholder="0.00" autoFocus />
-          <button type="button" className="link-btn" onClick={balanceInCash}>Put balance in cash</button>
-        </label>
-        <label>Credit / card
-          <input type="number" step="0.01" min="0" value={credit} onChange={(e) => { setCredit(e.target.value); setAdj(0) }} placeholder="0.00" />
-          <button type="button" className="link-btn" onClick={balanceOnCard}>Put balance on card</button>
-        </label>
-        <label>Card fee
-          <span className="fee-input">
-            <input type="number" step="0.01" min="0" value={fee ?? cardFee}
-              onChange={(e) => { setFee(e.target.value === '' ? 0 : Number(e.target.value)); setAdj(0) }} />
-            {fee != null && <button type="button" className="fee-reset" title="Back to auto" onClick={() => { setFee(null); setAdj(0) }}>↺</button>}
-          </span>
-          <span className="hint">
-            {pct > 0 ? `${pct}% of the card amount, added to the guest's charges` : 'Card fee % is 0. The admin sets it in Charges & Fees'}
-          </span>
-        </label>
-        <label>Balance after payment
-          <input
-            type="number" step="0.01"
-            className={after > 0 ? 'input-owed' : ''}
-            value={balanceText ?? after.toFixed(2)}
-            onFocus={(e) => { setBalanceText(after.toFixed(2)); e.target.select() }}
-            onChange={editBalance}
-            onBlur={() => setBalanceText(null)}
-          />
-          {after < 0 && <span className="hint">More than owed; guest will be in credit</span>}
-        </label>
-        {adj !== 0 && (
-          <div className="adj-note span-2">
-            Balance edited: {adj > 0 ? 'an extra charge of' : 'a discount of'} <strong>{money(Math.abs(adj))}</strong> will
-            be added to the stay (total {money(stay.total_amount)} → {money(num(stay.total_amount) + cardFee + adj)}).
-            <button type="button" className="btn btn-sm ml" onClick={() => setAdj(0)}>Reset</button>
-          </div>
-        )}
-        <label className="span-2">Notes
-          <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional" />
-        </label>
-        <div className="span-2 form-actions">
+      <form onSubmit={save}>
+        <PaymentCollected p={p} totalNote={<><span>Owed now</span><strong>{money(owed)}</strong></>} />
+        <div className="form-grid cols-4">
+          <label className="span-4">Notes
+            <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional" />
+          </label>
+        </div>
+        <div className="form-actions">
           <button type="button" className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" disabled={busy || (paying <= 0 && adj === 0) || num(stay.total_amount) + cardFee + adj < 0}>
-            {busy ? 'Saving…' : paying > 0 ? `Take payment ${money(paying)}` : 'Save balance'}
+          <button className="btn btn-primary" disabled={busy || (p.paying <= 0 && p.adj === 0) || num(stay.total_amount) + p.cardFee + p.adj < 0}>
+            {busy ? 'Saving…' : p.paying > 0 ? `Take payment ${money(p.paying)}` : 'Save balance'}
           </button>
         </div>
       </form>
