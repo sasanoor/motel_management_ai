@@ -4,8 +4,10 @@ import api, { errorText } from '../api'
 import { useAuth } from '../auth'
 import AddStayModal from '../components/AddStayModal'
 import CheckoutModal from '../components/CheckoutModal'
+import { PhotoGallery } from '../components/Photos'
 import { Alert, BalanceCell, PageHead, PaymentModal, RefundModal, StatusPill } from '../components/ui'
 import { fmtDate, fmtDateTime, fmtTime, money, num, periodText, rateTypeInfo } from '../utils'
+import { confirmBox } from '../confirm'
 
 function Row({ k, v }) {
   return <div className="kv"><span>{k}</span><strong>{v || '—'}</strong></div>
@@ -22,20 +24,27 @@ export default function StayDetail() {
   const [refunding, setRefunding] = useState(false)
   const [adding, setAdding] = useState(false)
 
+  const [photos, setPhotos] = useState([])
   const load = useCallback(() => {
     api.get(`/stays/${id}/`).then((r) => setS(r.data)).catch((e) => setErr(errorText(e)))
+    api.get('/photos/', { params: { stay: id } }).then((r) => setPhotos(r.data)).catch(() => {})
   }, [id])
+
+  async function deletePhoto(p) {
+    if (!(await confirmBox({ title: 'Delete photo?', message: `This ${p.kind_label} photo will be removed.` }))) return
+    try { await api.delete(`/photos/${p.id}/`); setPhotos((l) => l.filter((x) => x.id !== p.id)) } catch (e) { setErr(errorText(e)) }
+  }
   useEffect(() => { load() }, [load])
 
   async function act(path, confirmText, body = {}) {
-    if (confirmText && !window.confirm(confirmText)) return
+    if (confirmText && !(await confirmBox({ title: 'Undo checkout?', message: confirmText, tone: 'primary', confirmText: 'Undo checkout' }))) return
     try {
       const { data } = await api.post(`/stays/${id}/${path}/`, body)
       setS(data)
       setErr('')
     } catch (e) {
       // undoing an early checkout after the room was rented again: ask, then force
-      if (path === 'reopen' && e.response?.data?.overlap && window.confirm(e.response.data.overlap)) {
+      if (path === 'reopen' && e.response?.data?.overlap && await confirmBox({ title: 'Room already rented', message: e.response.data.overlap, confirmText: 'Undo anyway' })) {
         return act('reopen', null, { force: true })
       }
       setErr(errorText(e))
@@ -48,7 +57,12 @@ export default function StayDetail() {
     : 'Mark this guest as in house again?'
 
   async function remove() {
-    if (!window.confirm('Delete this guest record? You can recover it from Deleted Guests.')) return
+    const ok = await confirmBox({
+      title: 'Delete guest record?',
+      message: 'You can recover it from Deleted Guests.',
+      details: [['Guest', s.guest.name], ['Room', s.room_number], ['Stay', `${fmtDate(s.check_in_date)} to ${fmtDate(s.check_out_date)}`]],
+    })
+    if (!ok) return
     try {
       await api.delete(`/stays/${id}/`)
       navigate('/stays')
@@ -57,7 +71,10 @@ export default function StayDetail() {
 
   async function toggleDnr() {
     const next = !s.guest.do_not_rent
-    if (!window.confirm(next ? `Flag ${s.guest.name} as Do Not Rent?` : `Remove Do Not Rent flag from ${s.guest.name}?`)) return
+    const ok = await confirmBox(next
+      ? { title: 'Flag as Do Not Rent?', message: `Check-in will warn the clerk if ${s.guest.name} comes back.`, confirmText: 'Flag DNR' }
+      : { title: 'Remove Do Not Rent?', message: `${s.guest.name} can be rented to again.`, tone: 'primary', confirmText: 'Remove flag' })
+    if (!ok) return
     try {
       await api.patch(`/guests/${s.guest.id}/`, { do_not_rent: next })
       load()
@@ -122,12 +139,22 @@ export default function StayDetail() {
       </div>
 
       <section className="card">
+        <h2>Photos <span className="tiny muted">· DL photos: Edit to replace · damage photos: added at checkout</span></h2>
+        <PhotoGallery photos={photos} onDelete={deletePhoto} />
+      </section>
+
+      <section className="card">
         <h2>Payments</h2>
         <div className="pay-summary">
           {s.early ? (
             <div><span>Room charge ({s.num_days} night{s.num_days > 1 ? 's' : ''} used)</span><strong>{money(s.room_charge)}</strong></div>
           ) : (
             <div><span>Rate ({rateTypeInfo(s.rate_type).label.toLowerCase()})</span><strong>{money(s.rate)} × {periodText(s.periods, s.rate_type)}</strong></div>
+          )}
+          {num(s.balance_carried) > 0 && <div><span>Balance from previous stay</span><strong>{money(s.balance_carried)}</strong></div>}
+          {num(s.balance_carried) < 0 && <div><span>Balance moved to next stay</span><strong>−{money(Math.abs(num(s.balance_carried)))}</strong></div>}
+          {!s.early && num(s.extra_stay_charge) > 0 && (
+            <div><span>Added stay ({s.extra_stay_nights} night{s.extra_stay_nights > 1 ? 's' : ''}, other rate)</span><strong>{money(s.extra_stay_charge)}</strong></div>
           )}
           {num(s.pet_fee) > 0 && <div><span>Pets ({s.pets})</span><strong>{money(s.pet_fee)}</strong></div>}
           {num(s.extra_person_fee) > 0 && <div><span>Extra persons ({s.extra_persons})</span><strong>{money(s.extra_person_fee)}</strong></div>}

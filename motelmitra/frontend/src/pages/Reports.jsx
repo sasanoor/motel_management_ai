@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import api, { errorText } from '../api'
 import { useAuth } from '../auth'
+import CustomReports from '../components/CustomReports'
 import PaymentHistory from '../components/PaymentHistory'
 import { Alert, BalanceCell, Empty, PageHead, Stat } from '../components/ui'
-import { addDays, fmtDate, fmtDateTime, money, todayISO, rateTypeInfo } from '../utils'
+import { addDays, fmtDate, fmtDateTime, money, todayISO, rateTypeInfo, csvCell } from '../utils'
 
 const TABS = [
   { key: 'checkins', label: 'Daily Check-ins', range: true },
@@ -12,10 +13,11 @@ const TABS = [
   { key: 'outstanding', label: 'Outstanding Balances', range: false },
   { key: 'occupancy', label: 'Occupancy', range: true },
   { key: 'history', label: 'Payment History', range: false, own: true }, // own filters + Get report button
+  { key: 'custom', label: 'Custom reports', range: false, own: true },   // build, save, export your own
 ]
 
 function downloadCSV(name, header, rows) {
-  const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`
+  const esc = csvCell
   const csv = [header.map(esc).join(','), ...rows.map((r) => r.map(esc).join(','))].join('\n')
   const a = document.createElement('a')
   a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
@@ -80,8 +82,10 @@ export default function Reports() {
   return (
     <>
       <PageHead title="Reports">
-        <button className="btn" onClick={exportCSV} disabled={tab === 'history' ? !historyReady : !data}>Export CSV</button>
-        <button className="btn" onClick={() => window.print()}>Print</button>
+        {tab !== 'custom' && <>
+          <button className="btn" onClick={exportCSV} disabled={tab === 'history' ? !historyReady : !data}>Export CSV</button>
+          <button className="btn" onClick={() => window.print()}>Print</button>
+        </>}
       </PageHead>
 
       <div className="tabs">
@@ -90,7 +94,7 @@ export default function Reports() {
         ))}
       </div>
 
-      {(!current.own || isSuper) && <div className="filters no-print">
+      {(!current.own || (isSuper && tab !== 'custom')) && <div className="filters no-print">
         {isSuper && (
           <select value={client} onChange={(e) => setClient(e.target.value)}>
             {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
@@ -110,6 +114,9 @@ export default function Reports() {
         {current.label} {current.range && `· ${fmtDate(start)} to ${fmtDate(end)}`}
       </div>}
       <Alert>{err}</Alert>
+      {tab === 'custom' && (isSuper
+        ? <Alert kind="info">Custom reports are built inside each motel's login.</Alert>
+        : <CustomReports />)}
       {tab === 'history' && (isSuper && !client ? null : (
         <PaymentHistory isSuper={isSuper} client={client} onCSV={(fn) => { historyCSV.current = fn; setHistoryReady(true) }} />
       ))}

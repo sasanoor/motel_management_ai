@@ -2,7 +2,9 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import api, { errorText } from '../api'
 import { useAuth } from '../auth'
+import { PhotoUploader } from '../components/Photos'
 import RoomPicker from '../components/RoomPicker'
+import { confirmBox } from '../confirm'
 import { Alert, Modal, PageHead } from '../components/ui'
 import {
   RATE_TYPES, addDays, addMonths, daysBetween, fmtDate, money, monthsBetween, nowTime, num, periodText,
@@ -60,6 +62,41 @@ export default function CheckIn() {
   const [fees, setFees] = useState(null)               // motel's Charges & Fees settings
   const renewId = !editing ? params.get('renew') : null  // "Check out & check in again"
   const [renewOf, setRenewOf] = useState(null)          // the stay being continued
+  const [carry, setCarry] = useState(true)               // add the old stay's balance to this check-in
+  const [carriedBefore, setCarriedBefore] = useState(0)  // editing: balance brought in when it was created
+  // DL photos: { DL_FRONT, DL_BACK } taken on this form; reused = returning guest's last DL on file
+  const [dl, setDl] = useState({ DL_FRONT: null, DL_BACK: null })
+  const [reused, setReused] = useState({})
+
+  // edit: the stay's own DL photos
+  useEffect(() => {
+    if (!editing) return
+    api.get('/photos/', { params: { stay: id, kind: 'DL' } }).then(({ data }) => {
+      const out = { DL_FRONT: null, DL_BACK: null }
+      data.forEach((p) => { out[p.kind] = p })
+      setDl(out)
+    }).catch(() => {})
+  }, [editing, id])
+
+  // returning guest: show their last DL photo; it is copied into this stay when saved
+  useEffect(() => {
+    if (editing || !f.guest_id) return
+    api.get('/photos/guest_last_dl/', { params: { guest: f.guest_id } }).then(({ data }) => {
+      const out = {}
+      data.forEach((p) => { out[p.kind] = p })
+      setReused(out)
+    }).catch(() => {})
+  }, [editing, f.guest_id])
+
+  function addDl(ph) {
+    const old = dl[ph.kind]
+    if (old && old.id !== ph.id && editing) api.delete(`/photos/${old.id}/`).catch(() => {})  // replaced
+    setDl((p) => ({ ...p, [ph.kind]: ph }))
+  }
+  function removeDl(ph) {
+    api.delete(`/photos/${ph.id}/`).catch(() => {})
+    setDl((p) => ({ ...p, [ph.kind]: null }))
+  }
 
   useEffect(() => { api.get('/settings/').then((r) => setFees(r.data)).catch(() => {}) }, [])
 
@@ -74,6 +111,7 @@ export default function CheckIn() {
     api.get(`/stays/${id}/`).then(({ data: s }) => {
       setOriginalRoom(s.room)
       setPaidBefore(num(s.amount_paid))
+      setCarriedBefore(Math.max(num(s.balance_carried), 0))
       setF({
         ...blank(),
         room: s.room,
@@ -144,13 +182,16 @@ export default function CheckIn() {
   const earlyFee = num(f.early_checkin_fee)
   const charges = petFee + extraFee + cardFee + lateFee + earlyFee
 
-  const total = roomCharge + charges + num(f.adjustment)
+  // Check in again: the old stay's unpaid balance, added to this check-in when the clerk says Yes
+  const oldOwed = renewOf ? Math.max(r2(num(renewOf.balance)), 0) : 0
+  const carried = editing ? carriedBefore : (carry ? oldOwed : 0)
+  const total = roomCharge + charges + num(f.adjustment) + carried
   const paidNow = editing ? paidBefore : num(f.cash) + num(f.credit)
   const balance = total - paidNow
 
   // Put the rest on the card, including the card fee on that amount.
   function cardForBalance() {
-    const due = roomCharge + petFee + extraFee + lateFee + earlyFee + num(f.adjustment) - num(f.cash)
+    const due = roomCharge + petFee + extraFee + lateFee + earlyFee + num(f.adjustment) + carried - num(f.cash)
     if (due <= 0) return
     // auto fee: card amount c must cover due + c × pct  ->  c = due / (1 - pct)
     const credit = f.card_fee == null ? due / (1 - cardPct / 100) : due + num(f.card_fee)
@@ -159,7 +200,7 @@ export default function CheckIn() {
 
   // Put the rest in cash (card amount and its fee stay as they are).
   function cashForBalance() {
-    const due = roomCharge + charges + num(f.adjustment) - num(f.credit)
+    const due = roomCharge + charges + num(f.adjustment) + carried - num(f.credit)
     setF((p) => ({ ...p, cash: Math.max(r2(due), 0).toFixed(2) }))
   }
 
@@ -173,7 +214,7 @@ export default function CheckIn() {
     const text = e.target.value
     setBalanceText(text)
     if (text === '' || isNaN(Number(text))) return
-    const adj = Number(text) - (roomCharge + charges - paidNow)
+    const adj = Number(text) - (roomCharge + charges + carried - paidNow)
     setF((p) => ({ ...p, adjustment: Math.round(adj * 100) / 100 }))
   }
 
@@ -268,7 +309,7 @@ export default function CheckIn() {
     }
   }
 
-  async function submit(e, allowOverlap = false) {
+  async function submit(e, allowOverlap = false, statusOk = false) {
     e?.preventDefault()
     if (!f.room) return setErr('Select a room.')
     if (f.do_not_rent && !dnrAck) {
@@ -286,10 +327,12 @@ export default function CheckIn() {
     setBusy(true)
     setErr('')
     const payload = {
+      photo_ids: editing ? [] : [dl.DL_FRONT?.id, dl.DL_BACK?.id].filter(Boolean),
+      reuse_dl: !editing && Boolean(f.guest_id),
       ...f, cash: f.cash || 0, credit: f.credit || 0, rate: f.rate || 0,
-      adjustment: num(f.adjustment).toFixed(2), allow_overlap: allowOverlap,
+      adjustment: num(f.adjustment).toFixed(2), allow_overlap: allowOverlap, room_status_ok: statusOk,
       pets: num(f.pets), extra_persons: extraPersons,
-      renew_from: renewOf ? renewOf.id : null,
+      renew_from: renewOf ? renewOf.id : null, carry_balance: Boolean(renewOf && carry && oldOwed > 0),
       pet_fee: petFee.toFixed(2), extra_person_fee: extraFee.toFixed(2), card_fee: cardFee.toFixed(2), late_fee: lateFee.toFixed(2), early_checkin_fee: earlyFee.toFixed(2),
     }
     try {
@@ -299,6 +342,18 @@ export default function CheckIn() {
       navigate(`/stays/${data.id}`)
     } catch (e2) {
       setBusy(false)
+      // room not ready (dirty / cleaning / out of order): ask, then save with the clerk's name on record
+      const notReady = e2.response?.data?.room_status
+      if (notReady) {
+        const code = [].concat(e2.response.data.room_status_code || [])[0]
+        const ok = await confirmBox({
+          title: code === 'OUT_OF_ORDER' ? 'Room is out of order' : 'Room is not ready',
+          message: `${[].concat(notReady)[0]}\nYour name is recorded if you rent it anyway.`,
+          tone: code === 'OUT_OF_ORDER' ? 'danger' : 'primary', confirmText: 'Rent anyway',
+        })
+        if (ok) submit(null, allowOverlap, true)
+        return
+      }
       const overlapMsg = e2.response?.data?.overlap
       if (overlapMsg) {
         setOverlap(Array.isArray(overlapMsg) ? overlapMsg[0] : overlapMsg)
@@ -320,7 +375,16 @@ export default function CheckIn() {
           Continuing <strong>{renewOf.guest.name}</strong>, Room {renewOf.room_number}
           {' '}({fmtDate(renewOf.check_in_date)} → {fmtDate(renewOf.check_out_date)}).
           {' '}The previous stay will be <strong>checked out</strong> when you save this check-in.
-          {num(renewOf.balance) > 0 && <> Previous stay still owes <strong className="owed">{money(renewOf.balance)}</strong>.</>}
+          {oldOwed > 0 && (
+            <div className="carry-row">
+              <span>Previous stay still owes <strong className="owed">{money(oldOwed)}</strong>. Add it to this check-in?</span>
+              <div className="seg seg-sm">
+                <button type="button" className={carry ? 'on' : ''} onClick={() => setCarry(true)}>Yes, add {money(oldOwed)}</button>
+                <button type="button" className={!carry ? 'on danger' : ''} onClick={() => setCarry(false)}>No</button>
+              </div>
+              <span className="tiny muted">{carry ? 'The old stay is closed at $0.00 and the new total includes it.' : 'It stays owed on the old stay (Balance Payments).'}</span>
+            </div>
+          )}
         </div>
       )}
       <Alert>{err}</Alert>
@@ -445,6 +509,11 @@ export default function CheckIn() {
             <label>Zip
               <input value={f.zip_code} onChange={set('zip_code')} />
             </label>
+            <div className="span-4">
+              <PhotoUploader mode="DL" value={dl} onAdd={addDl} onRemove={removeDl}
+                stay={editing ? id : undefined} reused={editing ? undefined : reused}
+                title={`DL photos${reused.DL_FRONT || reused.DL_BACK ? ' · last DL on file is used unless you take a new one' : ''}`} />
+            </div>
           </div>
         </section>
 
@@ -465,6 +534,7 @@ export default function CheckIn() {
                 Room {money(roomCharge)}
                 {charges > 0 && ` + charges ${money(charges)}`}
                 {num(f.adjustment) !== 0 && ` ${num(f.adjustment) > 0 ? '+' : '−'} ${money(Math.abs(num(f.adjustment)))} adj.`}
+                {carried > 0 && ` + previous balance ${money(carried)}`}
               </span>
             </div>
 
@@ -554,7 +624,7 @@ export default function CheckIn() {
             {num(f.adjustment) !== 0 && (
               <div className="adj-note span-4">
                 Balance edited: total includes {num(f.adjustment) > 0 ? 'an extra charge of' : 'a discount of'}{' '}
-                <strong>{money(Math.abs(num(f.adjustment)))}</strong> ({money(roomCharge + charges)} room and charges {num(f.adjustment) > 0 ? '+' : '−'} {money(Math.abs(num(f.adjustment)))} = {money(total)}).
+                <strong>{money(Math.abs(num(f.adjustment)))}</strong> ({money(roomCharge + charges)} room and charges{carried > 0 ? ` + ${money(carried)} previous balance` : ''} {num(f.adjustment) > 0 ? '+' : '−'} {money(Math.abs(num(f.adjustment)))} = {money(total)}).
                 <button type="button" className="btn btn-sm ml" onClick={() => setF((p) => ({ ...p, adjustment: 0 }))}>Reset</button>
               </div>
             )}

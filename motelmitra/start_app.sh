@@ -3,7 +3,11 @@
 # Logs: logs/start_app_YYYY-MM-DD.txt, logs/backend_YYYY-MM-DD.txt, logs/frontend_YYYY-MM-DD.txt
 cd "$(dirname "$0")"
 ROOT="$(pwd)"
-LAN=1                       # 1 = localhost + WiFi (default), 0 = this PC only
+# WiFi or this machine only: HOST_ON_WIFI=yes / no in backend/.env
+[ -f "$ROOT/backend/.env" ] || cp "$ROOT/backend/.env.example" "$ROOT/backend/.env" 2>/dev/null
+WIFI="$(sed -n 's/^HOST_ON_WIFI=//p' "$ROOT/backend/.env" 2>/dev/null | tr -d '[:space:]' | tr 'A-Z' 'a-z')"
+if [ -z "$WIFI" ]; then printf '\n# yes = phones, tablets and other PCs on the WiFi can open MotelMitra. no = only this machine (localhost)\nHOST_ON_WIFI=yes\n' >> "$ROOT/backend/.env"; WIFI=yes; fi
+case "$WIFI" in no|n|false|0|off) LAN=0 ;; *) LAN=1 ;; esac
 FRONT_PORT=5173; BACK_PORT=8000
 D="$(date +%F)"
 mkdir -p logs
@@ -40,8 +44,11 @@ links() {
 }
 APPVER="$(sed -n 's/^APP_VERSION=//p' "$ROOT/.env" 2>/dev/null | tr -d '[:space:]')"
 if curl -s -o /dev/null http://localhost:5173; then
-  RUNNING="$(curl -s http://127.0.0.1:8000/api/version/ | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')"
-  if [ "$RUNNING" = "$APPVER" ]; then
+  RESP="$(curl -s http://127.0.0.1:8000/api/version/)"
+  RUNNING="$(echo "$RESP" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')"
+  RUNWIFI="$(echo "$RESP" | sed -n 's/.*"wifi":\([a-z]*\).*/\1/p')"
+  WANT=false; [ "$LAN" = "1" ] && WANT=true
+  if [ "$RUNNING" = "$APPVER" ] && [ "$RUNWIFI" = "$WANT" ]; then
     log "MotelMitra is already running (version $APPVER)."; links; exit 0
   fi
   log "Update found: restarting MotelMitra to load version $APPVER..."
@@ -54,7 +61,7 @@ log "Python: $($PY --version 2>&1)   Node: $(node --version)"
 
 [ -f backend/.env ] || { cp backend/.env.example backend/.env; log "WARNING: created backend/.env from .env.example. Set your DB password."; }
 
-$PY -c "import django, rest_framework, corsheaders, rest_framework_simplejwt, dotenv" 2>/dev/null || {
+$PY -c "import django, rest_framework, corsheaders, rest_framework_simplejwt, dotenv, segno" 2>/dev/null || {
   log "Installing Python packages (first run)..."
   $PY -m pip install -r backend/requirements.txt >>"$LOG" 2>&1 || fail "pip install failed. See $LOG"
 }

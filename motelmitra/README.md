@@ -16,6 +16,7 @@ Motel management system. Django REST + MySQL backend, React (Vite) frontend.
 | Night Audit (business day) | "Today" in the app is the business day, shown in the sidebar. It changes on its own at the day change time (default 11:00 AM, set by the admin on the Night Audit page), or right away when the front desk runs Night Audit (Close day). Closing saves the day's totals; the admin can reopen the last closed day. Every payment is counted on the business day it was taken |
 | Room sheet money | Cash and Credit columns show money taken on the sheet's date. Payments from earlier days show as Paid / Part paid, so nothing is counted twice. Totals row at the bottom: Total = check-ins on that date |
 | Add stay | Room sheet and guest page: guest stays longer (pays in advance). Pick extra nights / weeks / months at the same rate, new checkout shown, take cash / card now. Same entry; asks first if the room is booked later |
+| Photos (DL + room damage) | Check-in: DL front / back. Checkout (normal and early): room damage photos, damage notes, optional damage fee, "Also add to DNR". Add photos by **Use phone** (QR code, phone on the motel WiFi, no login), **Webcam** (PC opened as localhost), **Choose file**, drag & drop or Ctrl+V. Photos are shrunk to about 100 KB, stored privately in `backend/media/<check-in date>/Room-<number>/<YYYYMMDD-HHMM>_<room>_DL_1.jpg / _DAMAGE_1.jpg` (kept out of git). Returning guests reuse their last DL photo. Room change moves the photos. Low disk warning under 5 GB |
 | Balance payments | List of guests who owe money. Each payment adds to previous ones and rolls into the original check-in date report |
 | Delete / recover | Client admin soft-deletes guests; separate "Deleted Guests" menu to recover |
 | Reports | Daily check-ins, collections (cash vs credit), outstanding balances, occupancy, payment history (by room, dates and / or guest name: guest details and every payment and refund). CSV export and print |
@@ -143,6 +144,25 @@ python manage.py test motel
 | `/api/dashboard/?date=` | Staff |
 | `/api/business-day/` (+ `preview/`, `close/`, `history/`, `reopen/` admin) | Staff (maintenance can read) |
 | `/api/reports/checkins|collections|occupancy/?start=&end=`, `/api/reports/outstanding/` | Staff, super admin with `?client=` |
+
+## WiFi or this PC only
+
+In `backend\.env`:
+
+```
+HOST_ON_WIFI=yes   # phones, tablets and other PCs on the WiFi can open MotelMitra
+HOST_ON_WIFI=no    # only this PC: http://localhost:5173 (Use phone for photos is then off)
+```
+
+Change it, then double-click **start_app.bat**: it restarts MotelMitra in the new mode by itself.
+
+## Phone camera (Use phone)
+
+The phone must be on the same WiFi as the MotelMitra PC. Run **start_app.bat** once with right-click > **Run as administrator** so Windows Firewall lets phones in (only needed once).
+
+## Scanner (WiFi printer)
+
+Admin: **Charges & Fees → Scanner**. Enter the printer's IP address for **Scan now** (printers with AirScan / eSCL, most WiFi printers since 2015) and/or a **scan folder** on this PC for **Scan folder** (any printer: set its "Scan to PC" app to save there). Press **Save & test scanner**. At check-in / checkout the **🖨 Scan** button then offers both.
 
 ## Updating to a new version
 

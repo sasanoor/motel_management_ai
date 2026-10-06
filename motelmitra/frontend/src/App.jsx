@@ -7,11 +7,14 @@ import Deleted from './pages/Deleted'
 import Dnr from './pages/Dnr'
 import Login from './pages/Login'
 import Maintenance from './pages/Maintenance'
+import Housekeeping from './pages/Housekeeping'
+import Problems from './pages/Problems'
 import Reports from './pages/Reports'
 import { ChargesSettings, Clients, Directory, RoomTypes, Rooms, Users } from './pages/Setup'
 import StayDetail from './pages/StayDetail'
 import TodayReport from './pages/TodayReport'
 import NightAudit from './pages/NightAudit'
+import PhoneUpload from './pages/PhoneUpload'
 import Stays from './pages/Stays'
 
 function Guard({ allow, children }) {
@@ -25,10 +28,10 @@ function Guard({ allow, children }) {
 
 const STAFF = ['CLIENT_ADMIN', 'CLIENT_USER']
 
-// Maintenance users only ever see their checkout-rooms screen.
+// Maintenance users start on the housekeeping board.
 function Home() {
   const { user } = useAuth()
-  return user.role === 'MAINTENANCE' ? <Maintenance /> : <Dashboard />
+  return user.role === 'MAINTENANCE' ? <Housekeeping /> : <Dashboard />
 }
 const ADMIN = ['CLIENT_ADMIN']
 const SUPER = ['SUPER_ADMIN']
@@ -38,8 +41,13 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={user ? <Navigate to="/" replace /> : <Login />} />
+      {/* phone camera page from the QR code: no login */}
+      <Route path="/m/:token" element={<PhoneUpload />} />
       <Route element={<Guard><Layout /></Guard>}>
         <Route index element={<Guard allow={[...STAFF, 'MAINTENANCE']}><Home /></Guard>} />
+        <Route path="housekeeping" element={<Guard allow={[...STAFF, 'MAINTENANCE']}><Housekeeping /></Guard>} />
+        <Route path="problems" element={<Guard allow={[...STAFF, 'MAINTENANCE']}><Problems /></Guard>} />
+        <Route path="notes" element={<Guard allow={[...STAFF, 'MAINTENANCE']}><Maintenance /></Guard>} />
         <Route path="check-in" element={<Guard allow={STAFF}><CheckIn /></Guard>} />
         <Route path="stays" element={<Guard allow={STAFF}><Stays /></Guard>} />
         <Route path="stays/:id" element={<Guard allow={STAFF}><StayDetail /></Guard>} />
@@ -49,7 +57,7 @@ export default function App() {
         <Route path="dnr" element={<Guard allow={STAFF}><Dnr /></Guard>} />
         <Route path="today" element={<Guard allow={STAFF}><TodayReport /></Guard>} />
         <Route path="night-audit" element={<Guard allow={STAFF}><NightAudit /></Guard>} />
-        <Route path="reports" element={<Reports />} />
+        <Route path="reports" element={<Guard allow={[...STAFF, ...SUPER]}><Reports /></Guard>} />
         <Route path="rooms" element={<Guard allow={ADMIN}><Rooms /></Guard>} />
         <Route path="room-types" element={<Guard allow={ADMIN}><RoomTypes /></Guard>} />
         <Route path="charges" element={<Guard allow={ADMIN}><ChargesSettings /></Guard>} />

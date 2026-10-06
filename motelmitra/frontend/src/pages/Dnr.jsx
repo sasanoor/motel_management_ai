@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import api, { errorText } from '../api'
+import { PhotoUploader } from '../components/Photos'
 import { Alert, Empty, Modal, PageHead } from '../components/ui'
 import { fmtDate, nameParts } from '../utils'
+import { confirmBox } from '../confirm'
 
 const BLANK = {
   first_name: '', middle_name: '', last_name: '', phone: '', license_plate: '', dl_number: '', car: '', address: '', city: '', state: '', zip_code: '',
@@ -24,7 +26,7 @@ export default function Dnr() {
   useEffect(() => { const t = setTimeout(load, 250); return () => clearTimeout(t) }, [load])
 
   async function remove(g) {
-    if (!window.confirm(`Remove ${g.name} from the Do Not Rent list?`)) return
+    if (!(await confirmBox({ title: 'Remove from DNR list?', message: `${g.name} can be rented to again.`, tone: 'primary', confirmText: 'Remove' }))) return
     try {
       await api.patch(`/guests/${g.id}/`, { do_not_rent: false })
       setMsg(`${g.name} removed from the DNR list.`)
@@ -93,6 +95,15 @@ export default function Dnr() {
 
 function DnrForm({ initial, onClose, onSaved }) {
   const [f, setF] = useState(() => ({ ...initial, ...nameParts(initial) }))
+  const [dl, setDl] = useState({ DL_FRONT: null, DL_BACK: null })
+  useEffect(() => {
+    if (!initial.id) return
+    api.get('/photos/guest_last_dl/', { params: { guest: initial.id } }).then(({ data }) => {
+      const out = { DL_FRONT: null, DL_BACK: null }
+      data.forEach((p) => { out[p.kind] = p })
+      setDl(out)
+    }).catch(() => {})
+  }, [initial.id])
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value })
@@ -100,13 +111,13 @@ function DnrForm({ initial, onClose, onSaved }) {
   async function save(e) {
     e.preventDefault()
     if (!f.phone.trim() && !f.license_plate.trim() && !(f.dl_number || '').trim()) {
-      if (!window.confirm('No phone, plate or DL number entered. The guest can then only be matched by exact name. Save anyway?')) return
+      if (!(await confirmBox({ title: 'Save without phone, plate or DL?', message: 'The guest can then only be matched by exact name.', tone: 'primary', confirmText: 'Save anyway' }))) return
     }
     setBusy(true)
     setErr('')
     try {
       const { name: _old, ...rest } = f  // name is built from the parts on the server
-      const body = { ...rest, do_not_rent: true }
+      const body = { ...rest, do_not_rent: true, photo_ids: [dl.DL_FRONT?.id, dl.DL_BACK?.id].filter(Boolean) }
       const { data } = f.id ? await api.patch(`/guests/${f.id}/`, body) : await api.post('/guests/', body)
       onSaved(data)
     } catch (e2) {
@@ -154,6 +165,11 @@ function DnrForm({ initial, onClose, onSaved }) {
         <label>Zip
           <input value={f.zip_code} onChange={set('zip_code')} />
         </label>
+        <div className="span-2">
+          <PhotoUploader mode="DL" value={dl} guest={f.id || undefined}
+            onAdd={(ph) => setDl((p) => ({ ...p, [ph.kind]: ph }))}
+            onRemove={(ph) => { api.delete(`/photos/${ph.id}/`).catch(() => {}); setDl((p) => ({ ...p, [ph.kind]: null })) }} />
+        </div>
         <label className="span-2">Address
           <input value={f.address} onChange={set('address')} />
         </label>

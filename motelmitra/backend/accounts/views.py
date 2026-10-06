@@ -4,7 +4,9 @@ from rest_framework.exceptions import ValidationError
 from django.conf import settings
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
-from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+
+from .authentication import SingleSessionRefreshSerializer
 
 from .models import Client, User
 from .permissions import IsClientAdmin, IsClientStaff, IsSuperAdmin
@@ -13,8 +15,38 @@ from .serializers import (
 )
 
 
+LOGIN_MAX_FAILS = 10          # wrong passwords allowed per user name ...
+LOGIN_LOCK_SECONDS = 15 * 60  # ... in this window, then that user name is paused
+
+
 class LoginView(TokenObtainPairView):
+    """Login with a password-guessing guard: after 10 wrong passwords for one user name, that name is
+    paused for 15 minutes. Only failed tries count (the screens reach the server through one proxy,
+    so a limit by IP would lock out the whole front desk)."""
     serializer_class = LoginSerializer
+
+    def post(self, request, *args, **kwargs):
+        from django.core.cache import cache
+        name = str(request.data.get("username") or "").strip().lower()
+        key = f"login-fails:{name}"
+        if name and cache.get(key, 0) >= LOGIN_MAX_FAILS:
+            return Response({"detail": "Too many wrong passwords. Try again in 15 minutes, or ask the admin to reset the password."},
+                            status=status.HTTP_429_TOO_MANY_REQUESTS)
+        try:
+            resp = super().post(request, *args, **kwargs)
+        except Exception:
+            # wrong user name / password raise here (simplejwt); count the failed try, then answer as usual
+            if name:
+                cache.set(key, cache.get(key, 0) + 1, LOGIN_LOCK_SECONDS)
+            raise
+        if name and resp.status_code == 200:
+            cache.delete(key)
+        return resp
+
+
+class SingleSessionRefreshView(TokenRefreshView):
+    """Refresh refuses tokens from an older login of the same user (one login per user)."""
+    serializer_class = SingleSessionRefreshSerializer
 
 
 @api_view(["GET"])
@@ -92,4 +124,5 @@ def motel_settings(request):
 @permission_classes([AllowAny])
 def version(request):
     """Running server version; start_app.bat and the screens use it to spot an old server after an update."""
-    return Response({"version": settings.APP_VERSION})
+    return Response({"version": settings.APP_VERSION, "wifi": settings.HOST_ON_WIFI,
+                     "grid_scroll_buttons": settings.GRID_SCROLL_BUTTONS})

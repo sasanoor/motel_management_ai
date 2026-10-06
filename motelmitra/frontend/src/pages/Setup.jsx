@@ -3,6 +3,7 @@ import api, { errorText } from '../api'
 import { useAuth } from '../auth'
 import { Alert, Empty, Modal, PageHead } from '../components/ui'
 import { ROLES, fmtDate, money, num } from '../utils'
+import { confirmBox } from '../confirm'
 
 /* ------------------------------------------------------------------ shared */
 function useList(url) {
@@ -82,7 +83,7 @@ export function RoomTypes() {
     load()
   }
   async function remove(rt) {
-    if (!window.confirm(`Remove room type ${rt.name}?`)) return
+    if (!(await confirmBox({ title: 'Remove room type?', details: [['Room type', rt.name], ['Daily rate', money(rt.default_rate)]], confirmText: 'Remove' }))) return
     try { await api.delete(`/room-types/${rt.id}/`); load() } catch (e) { setErr(errorText(e)) }
   }
   return (
@@ -155,7 +156,7 @@ export function Rooms() {
     if (failed.length) setErr(`Skipped (already exist): ${failed.join(', ')}`)
   }
   async function remove(r) {
-    if (!window.confirm(`Remove room ${r.number}?`)) return
+    if (!(await confirmBox({ title: 'Remove room?', details: [['Room', r.number], ['Type', r.room_type_name || '']], confirmText: 'Remove' }))) return
     try { await api.delete(`/rooms/${r.id}/`); load() } catch (e) { setErr(errorText(e)) }
   }
   return (
@@ -268,45 +269,81 @@ export function Users() {
 
 /* ------------------------------------------------------------------ guest directory */
 export function Directory() {
+  const { isAdmin } = useAuth()
   const [q, setQ] = useState('')
   const [dnr, setDnr] = useState(false)
   const [rows, setRows] = useState(null)
   const [err, setErr] = useState('')
-  const load = () => api.get('/guests/', { params: { q: q || undefined, dnr: dnr ? 1 : undefined } }).then((r) => setRows(r.data)).catch((e) => setErr(errorText(e)))
+  const [msg, setMsg] = useState('')
+  const load = () => api.get('/guests/', { params: { q: q || undefined, dnr: dnr ? 1 : undefined } })
+    .then((r) => setRows(r.data)).catch((e) => setErr(errorText(e)))
   useEffect(() => { const t = setTimeout(load, 250); return () => clearTimeout(t) }, [q, dnr]) // eslint-disable-line react-hooks/exhaustive-deps
   async function toggle(g) {
-    if (!window.confirm(g.do_not_rent ? `Remove Do Not Rent from ${g.name}?` : `Flag ${g.name} as Do Not Rent?`)) return
+    const ok = await confirmBox(g.do_not_rent
+      ? { title: 'Remove Do Not Rent?', message: `${g.name} can be rented to again.`, tone: 'primary', confirmText: 'Remove flag' }
+      : { title: 'Flag as Do Not Rent?', message: `Check-in will warn the clerk if ${g.name} comes back.`, details: [['Guest', g.name], ['Phone', g.phone || '-']], confirmText: 'Flag DNR' })
+    if (!ok) return
     try { await api.patch(`/guests/${g.id}/`, { do_not_rent: !g.do_not_rent }); load() } catch (e) { setErr(errorText(e)) }
   }
+  async function remove(g) {
+    const ok = await confirmBox({
+      title: 'Delete guest?',
+      message: 'The guest is hidden from the directory, check-in lookups and the DNR check. Their stays and payments stay in all reports. Only an admin can recover.',
+      details: [['Guest', g.name], ['Phone', g.phone || '-'], ['Stays', String(g.stay_count)], ['Paid', `${money(num(g.cash_paid) + num(g.card_paid))}`], ['Balance', money(g.balance)]],
+    })
+    if (!ok) return
+    try { await api.delete(`/guests/${g.id}/`); setMsg(`${g.name} deleted. The admin can recover it from Deleted Guests.`); setErr(''); load() } catch (e) { setErr(errorText(e)) }
+  }
+  const sum = (k) => (rows || []).reduce((a, g) => a + num(g[k]), 0)
   return (
     <>
-      <PageHead title="Guest Directory" sub="Every guest who has stayed, with Do Not Rent flags" />
+      <PageHead title="Guest Directory" sub="Every guest who has stayed, with what they paid and still owe" />
       <div className="filters">
-        <input className="search" placeholder="Search name, phone or plate…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <input className="search" placeholder="Search name, phone, plate or DL…" value={q} onChange={(e) => setQ(e.target.value)} />
         <label className="inline check"><input type="checkbox" checked={dnr} onChange={(e) => setDnr(e.target.checked)} /> Do Not Rent only</label>
       </div>
       <Alert>{err}</Alert>
+      <Alert kind="success">{msg}</Alert>
       <div className="card no-pad">
         {rows && !rows.length && <Empty>No guests found.</Empty>}
         {rows?.length > 0 && (
           <div className="table-wrap">
-            <table className="table">
-              <thead><tr><th>Name</th><th>Phone</th><th>Plate</th><th>Car</th><th>City</th><th className="num">Stays</th><th>Last stay</th><th>DNR</th><th></th></tr></thead>
+            <table className="table dir-grid">
+              <thead><tr>
+                <th>Name</th><th>Phone</th><th>Plate</th><th>City</th><th className="num">Stays</th><th>Last stay</th>
+                <th className="num">Cash</th><th className="num">Card</th><th className="num">Balance</th><th></th>
+              </tr></thead>
               <tbody>
                 {rows.map((g) => (
                   <tr key={g.id}>
-                    <td><strong>{g.name}</strong></td>
+                    <td className="dir-name">
+                      <strong title={g.name}>{g.name}</strong>{g.do_not_rent && <span className="pill pill-red ml">DNR</span>}
+                      {g.car && <div className="tiny muted">{g.car}</div>}
+                    </td>
                     <td>{g.phone}</td>
                     <td>{g.license_plate}</td>
-                    <td>{g.car}</td>
-                    <td>{[g.city, g.state].filter(Boolean).join(', ')}</td>
+                    <td className="dir-city">{[g.city, g.state].filter(Boolean).join(', ')}</td>
                     <td className="num">{g.stay_count}</td>
                     <td>{fmtDate(g.last_stay)}</td>
-                    <td>{g.do_not_rent ? <span className="pill pill-red">DNR</span> : ''}</td>
-                    <td><button className="btn btn-sm" onClick={() => toggle(g)}>{g.do_not_rent ? 'Clear DNR' : 'Flag DNR'}</button></td>
+                    <td className="num amt-cash">{num(g.cash_paid) ? money(g.cash_paid) : <span className="muted">—</span>}</td>
+                    <td className="num amt-credit">{num(g.card_paid) ? money(g.card_paid) : <span className="muted">—</span>}</td>
+                    <td className="num"><span className={num(g.balance) > 0 ? 'owed' : num(g.balance) < 0 ? 'amt-credit' : ''}>{money(g.balance)}</span></td>
+                    <td className="row-actions">
+                      <button className="btn btn-sm" title={g.do_not_rent ? 'Remove the Do Not Rent flag' : 'Flag as Do Not Rent'} onClick={() => toggle(g)}>{g.do_not_rent ? 'Clear DNR' : 'Flag DNR'}</button>
+                      {isAdmin && <button className="btn btn-sm btn-danger-outline" title="Delete guest (admin)" onClick={() => remove(g)}>Delete</button>}
+                    </td>
                   </tr>
                 ))}
               </tbody>
+              <tfoot>
+                <tr>
+                  <td colSpan={6}>{rows.length} guest{rows.length === 1 ? '' : 's'}{rows.length >= 200 ? ' (first 200, search to narrow)' : ''}</td>
+                  <td className="num amt-cash">{money(sum('cash_paid'))}</td>
+                  <td className="num amt-credit">{money(sum('card_paid'))}</td>
+                  <td className="num"><span className={sum('balance') > 0 ? 'owed' : ''}>{money(sum('balance'))}</span></td>
+                  <td></td>
+                </tr>
+              </tfoot>
             </table>
           </div>
         )}
@@ -343,7 +380,10 @@ export function Clients() {
     load()
   }
   async function toggle(c) {
-    if (!window.confirm(`${c.is_active ? 'Deactivate' : 'Activate'} ${c.name}? ${c.is_active ? 'Its users will not be able to log in.' : ''}`)) return
+    const ok = await confirmBox(c.is_active
+      ? { title: 'Deactivate client?', message: 'Its users will not be able to log in.', details: [['Client', c.name]], confirmText: 'Deactivate' }
+      : { title: 'Activate client?', message: 'Its users can log in again.', details: [['Client', c.name]], tone: 'primary', confirmText: 'Activate' })
+    if (!ok) return
     try { await api.patch(`/clients/${c.id}/`, { is_active: !c.is_active }); load() } catch (e) { setErr(errorText(e)) }
   }
   async function showUsers(c) {
@@ -463,6 +503,68 @@ export function ChargesSettings() {
           </div>
         </form>
       )}
+      {f && <ScannerSettings f={f} setF={setF} />}
     </>
+  )
+}
+
+/** WiFi printer / scanner used by the 🖨 Scan button (DL and damage photos). */
+function ScannerSettings({ f, setF }) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const [test, setTest] = useState(null)
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value })
+
+  async function saveAndTest(e) {
+    e.preventDefault()
+    setBusy(true); setErr(''); setTest(null)
+    try {
+      const { data } = await api.patch('/settings/', {
+        scanner_address: f.scanner_address, scanner_area: f.scanner_area, scan_folder: f.scan_folder,
+      })
+      setF((p) => ({ ...p, ...data }))
+      const r = await api.get('/scanner/test/')
+      setTest(r.data)
+    } catch (e2) { setErr(errorText(e2)) }
+    setBusy(false)
+  }
+
+  return (
+    <form className="card settings-card scanner-card" onSubmit={saveAndTest}>
+      <h2>Scanner (WiFi printer)</h2>
+      <p className="tiny muted">Used by the <strong>🖨 Scan</strong> button for DL and damage photos. Fill in one or both.</p>
+      <Alert>{err}</Alert>
+      <div className="form-grid cols-2">
+        <label>Printer IP address (Scan now)
+          <input value={f.scanner_address || ''} onChange={set('scanner_address')} placeholder="e.g. 192.168.1.50" />
+          <span className="hint">On the printer: Settings → Network / WiFi → IP address. Works with printers that support AirScan / eSCL (most WiFi printers since 2015)</span>
+        </label>
+        <label>Scan area for DL
+          <select value={f.scanner_area || 'DL'} onChange={set('scanner_area')}>
+            <option value="DL">Card size, top-left corner of the glass</option>
+            <option value="PAGE">Full page</option>
+          </select>
+          <span className="hint">Card size gives a clean licence photo without the empty page</span>
+        </label>
+        <label className="span-2">Scan folder on this PC (Scan folder)
+          <input value={f.scan_folder || ''} onChange={set('scan_folder')} placeholder="e.g. C:\Users\FrontDesk\Documents\Scans" />
+          <span className="hint">For any printer: set the printer's "Scan to PC" (HP Smart, Canon IJ Scan, Epson ScanSmart, Brother iPrint&amp;Scan, Windows Scan) to save into this folder</span>
+        </label>
+        <div className="span-2 form-actions">
+          <button className="btn btn-primary" disabled={busy}>{busy ? 'Testing…' : 'Save & test scanner'}</button>
+        </div>
+      </div>
+      {test && (
+        <div className="scanner-test">
+          {test.direct && (test.direct.ok
+            ? <Alert kind="success">✓ Printer found: {test.direct.model}. Scan now is ready.</Alert>
+            : <Alert>Scan now: {test.direct.error}</Alert>)}
+          {test.folder && (test.folder.ok
+            ? <Alert kind="success">✓ Scan folder found. Scan folder is ready.</Alert>
+            : <Alert>Scan folder: {test.folder.error}</Alert>)}
+          {!test.direct && !test.folder && <Alert kind="info">Nothing set: the Scan button will ask you to set this up.</Alert>}
+        </div>
+      )}
+    </form>
   )
 }

@@ -100,6 +100,16 @@ class ClientOnboardSerializer(ClientSerializer):
 
 
 class LoginSerializer(TokenObtainPairSerializer):
+    @classmethod
+    def get_token(cls, user):
+        # new login: new session key, so the user's older login (another PC / phone) is signed out
+        import uuid
+        user.session_key = uuid.uuid4().hex
+        user.save(update_fields=["session_key"])
+        token = super().get_token(user)
+        token["sid"] = user.session_key
+        return token
+
     def validate(self, attrs):
         data = super().validate(attrs)
         user = self.user
@@ -114,7 +124,8 @@ class LoginSerializer(TokenObtainPairSerializer):
 class MotelSettingsSerializer(serializers.ModelSerializer):
     class Meta:
         model = Client
-        fields = ["id", "name", "card_fee_percent", "pet_fee", "extra_person_fee", "included_guests", "late_fee", "early_checkin_fee", "day_change_time"]
+        fields = ["id", "name", "card_fee_percent", "pet_fee", "extra_person_fee", "included_guests", "late_fee", "early_checkin_fee", "day_change_time",
+                  "scanner_address", "scanner_area", "scan_folder"]
         read_only_fields = ["id", "name"]
 
     def validate_card_fee_percent(self, v):

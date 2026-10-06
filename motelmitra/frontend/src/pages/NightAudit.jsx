@@ -4,6 +4,7 @@ import api, { errorText } from '../api'
 import { useAuth } from '../auth'
 import { Alert, Empty, PageHead, Stat } from '../components/ui'
 import { addDays, fmtDateTime, fmtDay, fmtTime, money, num } from '../utils'
+import { confirmBox } from '../confirm'
 
 /**
  * Night Audit: close the business day. The next day starts right away, so new check-ins
@@ -32,10 +33,13 @@ export default function NightAudit() {
     const warn = []
     if (d.summary.still_due_out) warn.push(`${d.summary.still_due_out} guest(s) still due out (room ${d.summary.still_due_out_rooms.join(', ')})`)
     if (d.summary.unpaid_checkins) warn.push(`${d.summary.unpaid_checkins} check-in(s) with ${money(d.summary.unpaid_amount)} unpaid`)
-    const text = `Close ${fmtDay(day)} and start ${fmtDay(addDays(day, 1))}?` +
-      (warn.length ? `\n\nStill open:\n• ${warn.join('\n• ')}` : '') +
-      '\n\nNew check-ins and payments will count on the next day.'
-    if (!window.confirm(text)) return
+    const ok = await confirmBox({
+      title: `Close ${fmtDay(day)}?`,
+      message: `The new business day ${fmtDay(addDays(day, 1))} starts now. New check-ins and payments will count on the next day.` +
+        (warn.length ? `\n\nStill open:\n• ${warn.join('\n• ')}` : ''),
+      tone: 'primary', confirmText: 'Close day',
+    })
+    if (!ok) return
     setBusy(true); setErr('')
     try {
       const { data } = await api.post('/business-day/close/', { date: day })
@@ -46,7 +50,13 @@ export default function NightAudit() {
 
   async function reopen() {
     const last = d.last_close
-    if (!window.confirm(`Reopen ${fmtDay(last.date)}? The business day goes back to ${fmtDay(last.date)}.`)) return
+    if (!(await confirmBox({
+      title: `Reopen ${fmtDay(last.date)}?`,
+      message: `Use this if the day was closed by mistake. The business day goes back to ${fmtDay(last.date)}. ` +
+        'Payments and expenses entered after the close move back to that day.',
+      details: [['Closed by', last.closed_by || '-'], ['Closed at', fmtDateTime(last.closed_at)]],
+      tone: 'primary', confirmText: `Reopen ${fmtDay(last.date)}`,
+    }))) return
     try {
       const { data } = await api.post('/business-day/reopen/')
       applyBiz(data.business_date)
@@ -69,6 +79,7 @@ export default function NightAudit() {
   }
 
   if (!d) return <Alert>{err}</Alert>
+  const lastClose = d.last_close
   const s = d.summary
   const next = addDays(d.business_date, 1)
 
@@ -77,6 +88,20 @@ export default function NightAudit() {
       <PageHead title="Night Audit" sub="Close the business day. Check-ins and payments after closing count on the next day." />
       <Alert kind="success">{msg}</Alert>
       <Alert>{err}</Alert>
+
+      {lastClose && lastClose.date === addDays(d.business_date, -1) && (
+        <div className="card undo-close">
+          <div>
+            <strong>{fmtDay(lastClose.date)} was closed</strong>
+            <span className="tiny muted"> {fmtDateTime(lastClose.closed_at)} by {lastClose.closed_by || 'unknown'}</span>
+            <div className="tiny muted">
+              {isAdmin ? 'Closed by mistake? Reopen it. Payments and expenses entered since then move back to that day.'
+                : 'Closed by mistake? Ask the admin to reopen it from this page.'}
+            </div>
+          </div>
+          {isAdmin && <button className="btn" onClick={reopen}>↩ Reopen {fmtDay(lastClose.date)}</button>}
+        </div>
+      )}
 
       <section className="card audit-card">
         <div className="audit-day">

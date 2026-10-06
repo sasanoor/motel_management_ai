@@ -22,10 +22,25 @@ api.interceptors.request.use((config) => {
   return config
 })
 
+// One login per user: when the same user logs in on another PC / phone, this screen is signed out.
+const KICKED = 'mm_signed_out_reason'
+export function takeSignOutReason() {
+  try { const m = sessionStorage.getItem(KICKED); sessionStorage.removeItem(KICKED); return m || '' } catch { return '' }
+}
+function signedOutElsewhere(error) {
+  const d = error?.response?.data
+  if (error?.response?.status !== 401 || d?.code !== 'session_replaced') return false
+  try { sessionStorage.setItem(KICKED, d.detail || 'You were signed out because this user logged in somewhere else.') } catch { /* ignore */ }
+  tokens.clear()
+  window.location.href = '/login'
+  return true
+}
+
 let refreshing = null
 api.interceptors.response.use(
   (res) => res,
   async (error) => {
+    if (signedOutElsewhere(error)) return new Promise(() => {}) // page is leaving; keep screens quiet
     const original = error.config
     if (error.response?.status === 401 && tokens.refresh && !original._retry && !original.url.includes('auth/')) {
       original._retry = true
@@ -34,7 +49,8 @@ api.interceptors.response.use(
         const { data } = await refreshing
         tokens.set(data.access)
         return api(original)
-      } catch {
+      } catch (e2) {
+        if (signedOutElsewhere(e2)) return new Promise(() => {})
         tokens.clear()
         window.location.href = '/login'
       } finally {

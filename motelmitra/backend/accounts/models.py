@@ -26,6 +26,10 @@ class Client(models.Model):
     included_guests = models.PositiveSmallIntegerField(default=2, help_text="Guests included in the room rate")
     late_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0, help_text="Late checkout fee")
     early_checkin_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0, help_text="Early check-in fee")
+    # WiFi printer / scanner for DL photos
+    scanner_address = models.CharField(max_length=120, blank=True, help_text="Printer IP for direct scan (eSCL / AirScan)")
+    scanner_area = models.CharField(max_length=8, default="DL", help_text="DL = card size in the top-left corner, PAGE = full page")
+    scan_folder = models.CharField(max_length=255, blank=True, help_text="Folder on this PC where the printer saves scans")
     # Business day: changes automatically at this time, or earlier when the front desk runs Night Audit.
     day_change_time = models.TimeField(default=datetime.time(11, 0),
                                        help_text="Business day changes automatically at this time")
@@ -54,6 +58,8 @@ class User(AbstractUser):
         Client, null=True, blank=True, on_delete=models.CASCADE, related_name="users"
     )
     phone = models.CharField(max_length=30, blank=True)
+    # One login at a time: a new login replaces this key, and tokens from the older login stop working.
+    session_key = models.CharField(max_length=40, blank=True, default="")
 
     def save(self, *args, **kwargs):
         # Anyone created with `createsuperuser` becomes the platform super admin.

@@ -4,12 +4,14 @@ import { BrowserRouter } from 'react-router-dom'
 import App from './App'
 import { AuthProvider } from './auth'
 import './index.css'
+import ConfirmHost from './components/ConfirmHost'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <BrowserRouter>
       <AuthProvider>
         <App />
+        <ConfirmHost />
       </AuthProvider>
     </BrowserRouter>
   </StrictMode>,
