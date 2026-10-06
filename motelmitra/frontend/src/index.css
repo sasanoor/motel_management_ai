@@ -391,6 +391,9 @@ input.input-owed { color: var(--red); font-weight: 700; }
 .sheet-earlier { color: var(--muted); }
 .sheet .sheet-total td { background: #f6f8fb; font-weight: 700; border-top: 2px solid var(--line); vertical-align: top; }
 .sheet .sheet-total .tiny { font-weight: 400; }
+.sheet .sheet-other td { background: #fbfcfe; vertical-align: top; }
+.sheet .sheet-other .tiny { font-weight: 400; }
+.sheet .sheet-day td { border-top: 1px solid var(--line); }
 .update-banner { margin-bottom: 16px; }
 .btn-add { border-color: var(--primary); color: var(--primary); }
 .add-stay-sum strong { color: var(--navy); }
@@ -494,3 +497,24 @@ input.input-owed { color: var(--red); font-weight: 700; }
 .pay-collected { margin-top: 6px; }
 .modal .form-grid.cols-4 + .form-grid { margin-top: 10px; }
 @media (max-width: 760px) { .modal .form-grid.cols-4 { grid-template-columns: 1fr 1fr; } .modal .form-grid.cols-4 .span-4 { grid-column: span 2; } }
+
+/* Today's Report: rooms open for the night */
+.open-rooms { margin-top: 12px; }
+.open-rooms-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.open-rooms-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.open-room { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 6px 10px;
+  border: 1px solid var(--line); border-radius: 8px; background: #fff; cursor: pointer; font: inherit; }
+.open-room:hover { border-color: var(--navy); background: #f6f8fb; }
+
+/* Payments received: cash / credit colour coding and totals */
+.pill.pay-cash { background: #e3f4ea; color: #1f7a45; }
+.pill.pay-credit { background: #e4eefc; color: #1d4a8f; }
+.amt-cash { color: #1f7a45; }
+.amt-credit { color: #1d4a8f; }
+.pay-totals td { background: #f6f8fb; font-weight: 700; border-top: 1px solid var(--line); vertical-align: top; }
+.pay-totals .tiny { font-weight: 400; }
+.pay-totals .pt-split { display: table-cell; }
+.pay-totals .pt-split span { margin-right: 22px; white-space: nowrap; }
+.pay-totals .pt-exp td { color: var(--red); }
+.pay-totals .pt-exp .pt-split span, .pay-totals .refund-row .pt-split span { color: var(--red); }
+.pay-totals .pt-net td { border-top: 2px solid var(--line); font-size: 15px; }

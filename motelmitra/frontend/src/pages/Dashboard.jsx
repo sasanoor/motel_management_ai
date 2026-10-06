@@ -75,7 +75,7 @@ export default function Dashboard() {
 
       <div className="card no-pad">
         {data && tab === 'sheet' && (
-          <RoomSheet date={date} rooms={data.rooms} stays={data.staying} onPay={setPaying} onCheckout={checkout} onAddStay={setAdding} />
+          <RoomSheet date={date} rooms={data.rooms} stays={data.staying} dayMoney={data.day_money} onPay={setPaying} onCheckout={checkout} onAddStay={setAdding} />
         )}
         {data && tab === 'notes' && (
           <NotesPanel date={date} rooms={data.rooms} onCount={load} />

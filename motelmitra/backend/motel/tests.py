@@ -1,3 +1,4 @@
+from unittest import mock
 import datetime
 
 from django.core.management import call_command
@@ -856,7 +857,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 class _FakePrinter(BaseHTTPRequestHandler):
     """Minimal eSCL (AirScan) printer: capabilities, scan job, NextDocument (busy once first)."""
-    calls = {"next": 0}
+    calls = {"next": 0, "deleted": []}
+    stuck = False          # an old job left running: POST answers 503 until it is cancelled
+    state = "Idle"
 
     def log_message(self, *a):
         pass
@@ -864,6 +867,11 @@ class _FakePrinter(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/eSCL/ScannerCapabilities":
             body = b'<scan:ScannerCapabilities xmlns:pwg="x"><pwg:MakeAndModel>Demo LaserJet 100</pwg:MakeAndModel></scan:ScannerCapabilities>'
+            self.send_response(200); self.send_header("Content-Type", "text/xml"); self.end_headers(); self.wfile.write(body)
+        elif self.path == "/eSCL/ScannerStatus":
+            job = ('<scan:Jobs><scan:JobInfo><pwg:JobUri>/eSCL/ScanJobs/7</pwg:JobUri>'
+                   '<pwg:JobState>Processing</pwg:JobState></scan:JobInfo></scan:Jobs>') if _FakePrinter.stuck else ""
+            body = f'<scan:ScannerStatus><pwg:State>{_FakePrinter.state}</pwg:State>{job}</scan:ScannerStatus>'.encode()
             self.send_response(200); self.send_header("Content-Type", "text/xml"); self.end_headers(); self.wfile.write(body)
         elif self.path == "/eSCL/ScanJobs/42/NextDocument":
             _FakePrinter.calls["next"] += 1
@@ -874,10 +882,18 @@ class _FakePrinter(BaseHTTPRequestHandler):
         else:
             self.send_response(404); self.end_headers()
 
+    def do_DELETE(self):
+        _FakePrinter.calls["deleted"].append(self.path)
+        if self.path == "/eSCL/ScanJobs/7":
+            _FakePrinter.stuck = False
+        self.send_response(200); self.end_headers()
+
     def do_POST(self):
         n = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(n)
         _FakePrinter.calls["xml"] = body.decode()
+        if _FakePrinter.stuck or _FakePrinter.state != "Idle":
+            self.send_response(503); self.end_headers(); return
         self.send_response(201); self.send_header("Location", "/eSCL/ScanJobs/42"); self.end_headers()
 
 
@@ -905,6 +921,21 @@ class ScannerTests(APITestCase):
             self.assertEqual((r.status_code, r["Content-Type"]), (200, "image/jpeg"))
             self.assertIn(b"SCANNED", b"".join(r.streaming_content) if r.streaming else r.content)
             self.assertIn("<pwg:Width>1350</pwg:Width>", _FakePrinter.calls["xml"])
+            self.assertIn("/eSCL/ScanJobs/42", _FakePrinter.calls["deleted"])   # job freed after the scan
+            # a stuck old job makes the printer say busy: it is cancelled and the scan goes through
+            from motel import views as _mv
+            with mock.patch.object(_mv, "SCAN_RETRY_WAIT", 0):
+                _FakePrinter.stuck = True
+                _FakePrinter.calls["next"] = 1
+                r = self.client.post("/api/scanner/scan/", {"area": "DL"}, format="json")
+                self.assertEqual(r.status_code, 200)
+                self.assertIn("/eSCL/ScanJobs/7", _FakePrinter.calls["deleted"])
+                # printer stopped (lid open / jam): clear message instead of a plain "busy"
+                _FakePrinter.state = "Stopped"
+                r = self.client.post("/api/scanner/scan/", {"area": "DL"}, format="json")
+                self.assertEqual(r.status_code, 400)
+                self.assertIn("scanner is stopped", r.data["detail"])
+                _FakePrinter.state = "Idle"
             f = self.client.get("/api/scanner/folder/").data
             self.assertEqual([x["name"] for x in f["files"]], ["scan001.jpg"])
             r = self.client.get("/api/scanner/folder/file/", {"name": "scan001.jpg"})
@@ -930,3 +961,30 @@ class WifiSettingTests(APITestCase):
         with override_settings(HOST_ON_WIFI=True):
             self.assertEqual(self.client.get("/api/version/").data["wifi"], True)
             self.assertEqual(self.client.post("/api/photo-sessions/", {"kind": "DL_FRONT"}, format="json").status_code, 201)
+
+
+class SheetDayMoneyTests(APITestCase):
+    def test_dashboard_day_money_matches_report(self):
+        """Room sheet footer total = Cash drawer, even for payments on stays without a row."""
+        seed()
+        r = self.client.post("/api/auth/login/", {"username": "clerk", "password": "clerk123"}, format="json")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+        biz = self.client.get("/api/business-day/").data["business_date"]
+        d = datetime.date.fromisoformat(str(biz))
+        free = [x for x in self.client.get("/api/rooms/board/", {"date": str(d)}).data if not x["occupied"]]
+        # a guest who left yesterday pays the balance today: no row on today's sheet
+        s = self.client.post("/api/stays/", {"room": free[0]["id"], "check_in_date": str(d - datetime.timedelta(days=2)), "check_in_time": "14:00",
+            "check_out_date": str(d - datetime.timedelta(days=1)), "check_out_time": "11:00", "num_guests": 1,
+            "rate": "60", "name": "Gone Guest", "allow_overlap": True}, format="json").data
+        self.client.post(f"/api/stays/{s['id']}/payments/", {"cash": "60"}, format="json")
+        dash = self.client.get("/api/dashboard/", {"date": str(d)}).data
+        rep = self.client.get("/api/reports/today/", {"date": str(d)}).data["money"]
+        self.assertEqual((dash["day_money"]["cash"], dash["day_money"]["credit"]), (rep["cash"], rep["credit"]))
+        self.assertNotIn(s["id"], [x["id"] for x in dash["staying"]])
+        # expenses come off the sheet too, same as the Cash drawer
+        self.client.post("/api/expenses/", {"amount": "12.50", "method": "CASH", "description": "Soap"}, format="json")
+        self.client.post("/api/expenses/", {"amount": "30", "method": "CREDIT", "description": "Plumber"}, format="json")
+        dm = self.client.get("/api/dashboard/", {"date": str(d)}).data["day_money"]
+        rep = self.client.get("/api/reports/today/", {"date": str(d)}).data["money"]
+        self.assertEqual((dm["expenses_cash"], dm["expenses_card"]), (rep["expenses_cash"], rep["expenses_card"]))
+        self.assertAlmostEqual(float(dm["cash"]) - float(dm["expenses_cash"]), float(rep["cash_in_drawer"]), places=2)

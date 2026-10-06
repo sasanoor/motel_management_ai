@@ -2,7 +2,7 @@ import datetime
 from decimal import Decimal
 
 from django.db import transaction
-from django.db.models import F, Q
+from django.db.models import F, Q, Sum
 from django.utils import timezone
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
@@ -731,9 +731,20 @@ def dashboard(request):
     due_out_ids = {s.room_id for s in checkouts if s.status == Stay.CHECKED_IN}
     total_rooms = Room.objects.filter(client=client, is_active=True).count()
     open_balances = [s for s in base.filter(check_in_date__lte=day) if s.total_amount - paid(s) > 0]
+    # all money taken on this business day (same rule as Today's Report), so the Room sheet footer
+    # can show payments on stays that have no row (earlier stays, guests already gone, refunds)
+    day_pays = Payment.objects.filter(stay__client=client, stay__is_deleted=False, business_date=day)
+    day_cash = day_pays.filter(method=Payment.CASH).aggregate(t=Sum("amount"))["t"] or ZERO
+    day_credit = day_pays.filter(method=Payment.CREDIT).aggregate(t=Sum("amount"))["t"] or ZERO
+    day_exps = Expense.objects.filter(client=client, business_date=day, is_deleted=False)
+    exp_cash = day_exps.filter(method=Expense.CASH).aggregate(t=Sum("amount"))["t"] or ZERO
+    exp_card = day_exps.filter(method=Expense.CREDIT).aggregate(t=Sum("amount"))["t"] or ZERO
+    q2 = lambda v: str(Decimal(v).quantize(Decimal("0.01")))
 
     return Response({
         "date": day,
+        "day_money": {"cash": q2(day_cash), "credit": q2(day_credit),
+                      "expenses_cash": q2(exp_cash), "expenses_card": q2(exp_card)},
         "stats": {
             "total_rooms": total_rooms,
             "occupied": len({s.room_id for s in occupied}),
@@ -1618,21 +1629,83 @@ def scanner_scan(request):
   <pwg:DocumentFormat>image/jpeg</pwg:DocumentFormat>
   <scan:DocumentFormatExt>image/jpeg</scan:DocumentFormatExt>
 </scan:ScanSettings>""".encode()
-    resp = _scanner_request(base + "/eSCL/ScanJobs", data=settings_xml, method="POST", timeout=20)
+    # Start the job. "Busy" usually means an old job is stuck (a scan that timed out or was closed)
+    # or the printer is waking up: clear stuck jobs, wait, try again before giving up.
+    resp = None
+    for attempt in range(SCAN_RETRIES):
+        try:
+            resp = _scanner_request(base + "/eSCL/ScanJobs", data=settings_xml, method="POST", timeout=20)
+            break
+        except ValidationError as e:
+            if "busy" not in str(e.detail):
+                raise
+            if attempt == 0:
+                _cancel_stuck_jobs(base)
+            time.sleep(SCAN_RETRY_WAIT)
+    if resp is None:
+        raise ValidationError({"detail": _busy_message(_scanner_status(base)[0])})
     job = resp.headers.get("Location")
     if not job:
         raise ValidationError({"detail": "The printer did not start a scan job."})
     job = urljoin(base + "/", job)
-    for _ in range(30):   # the scan head needs a few seconds
-        try:
-            img = _scanner_request(job.rstrip("/") + "/NextDocument", timeout=60).read()
-            if img:
-                return HttpResponse(img, content_type="image/jpeg")
-        except ValidationError as e:
-            if "busy" not in str(e.detail):
-                raise
-        time.sleep(1)
-    raise ValidationError({"detail": "The scan took too long. Try again."})
+    try:
+        for _ in range(30):   # the scan head needs a few seconds
+            try:
+                img = _scanner_request(job.rstrip("/") + "/NextDocument", timeout=60).read()
+                if img:
+                    return HttpResponse(img, content_type="image/jpeg")
+            except ValidationError as e:
+                if "busy" not in str(e.detail):
+                    raise
+            time.sleep(1)
+        raise ValidationError({"detail": "The scan took too long. Try again."})
+    finally:
+        _delete_job(job)   # always free the printer, so the next scan does not find it busy
+
+
+SCAN_RETRIES = 4          # tries to start a scan when the printer says busy
+SCAN_RETRY_WAIT = 3       # seconds between tries
+
+
+def _scanner_status(base):
+    """(state, [active job URIs]) from eSCL ScannerStatus. state: Idle / Processing / Stopped / None."""
+    import re
+    try:
+        body = _scanner_request(base + "/eSCL/ScannerStatus", timeout=6).read().decode("utf-8", "ignore")
+    except ValidationError:
+        return None, []
+    m = re.search(r"<(?:\w+:)?State>\s*(\w+)\s*<", body)
+    jobs = []
+    for info in re.findall(r"<(?:\w+:)?JobInfo>(.*?)</(?:\w+:)?JobInfo>", body, re.S):
+        uri = re.search(r"<(?:\w+:)?JobUri>\s*(.*?)\s*<", info)
+        st = re.search(r"<(?:\w+:)?JobState>\s*(\w+)\s*<", info)
+        if uri and st and st.group(1) in ("Pending", "Processing"):
+            jobs.append(uri.group(1))
+    return (m.group(1) if m else None), jobs
+
+
+def _delete_job(url):
+    try:
+        _scanner_request(url, method="DELETE", timeout=6)
+    except ValidationError:
+        pass
+
+
+def _cancel_stuck_jobs(base):
+    from urllib.parse import urljoin
+    for uri in _scanner_status(base)[1]:
+        _delete_job(urljoin(base + "/", uri))
+
+
+def _busy_message(state):
+    if state == "Stopped":
+        return ("The printer's scanner is stopped. Check the printer screen for a message (lid open, paper jam, "
+                "error) and press OK or Cancel there, then try again.")
+    if state == "Processing":
+        return ("The printer is busy with another job (printing, copying or a scan started on the printer). "
+                "Wait for it to finish, then try again.")
+    return ("The printer is still busy. On the printer, press Cancel or Home to leave any menu, wait 10 seconds "
+            "and try again. If it keeps happening, switch the printer off and on.")
 
 
 _SCAN_EXT = (".jpg", ".jpeg", ".png", ".bmp", ".webp")

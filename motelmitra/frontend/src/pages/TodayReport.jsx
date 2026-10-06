@@ -136,10 +136,34 @@ export default function TodayReport() {
             <Stat label="Occupancy" value={`${d.summary.occupancy_pct}%`} />
           </div>
 
+          {sheetData && (() => {
+            const openRooms = sheetData.rooms.filter((r) => r.available)
+              .sort((a, b) => a.number.localeCompare(b.number, undefined, { numeric: true }))
+            return (
+              <div className="card open-rooms">
+                <div className="open-rooms-head">
+                  <strong>Open tonight ({openRooms.length})</strong>
+                  <span className="tiny muted">Rooms nobody is in for the night of {fmtDate(date)}. Click one to check in.</span>
+                </div>
+                {openRooms.length === 0 ? <span className="muted">No rooms open. Sold out.</span> : (
+                  <div className="open-rooms-list">
+                    {openRooms.map((r) => (
+                      <button key={r.id} type="button" className="open-room" title={`Check in to ${r.number}`}
+                        onClick={() => navigate(`/check-in?room=${r.id}&date=${date}`)}>
+                        <span className="room-chip">{r.number}</span>
+                        <span className="tiny muted">{r.room_type} · {money(r.default_rate)}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
+          })()}
+
           <h2 className="section-title">Room sheet{mine && <span className="tiny muted"> · all clerks</span>}</h2>
           <div className="card no-pad report-sheet">
             {sheetData
-              ? <RoomSheet date={date} rooms={sheetData.rooms} stays={sheetData.staying}
+              ? <RoomSheet report date={date} rooms={sheetData.rooms} stays={sheetData.staying} dayMoney={sheetData.day_money}
                   onPay={setPaying} onCheckout={setCheckingOut} onAddStay={setAdding} />
               : <Empty>Loading…</Empty>}
           </div>
@@ -235,8 +259,8 @@ export default function TodayReport() {
                       <tr key={p.id} className={`clickable ${p.type === 'Refund' ? 'refund-row' : ''}`} onClick={() => open(p.stay_id)}>
                         <td>{fmtDateTime(p.paid_at)}</td>
                         <td>{p.type}</td>
-                        <td>{p.method === 'CASH' ? 'Cash' : 'Credit'}</td>
-                        <td className="num">{money(p.amount)}</td>
+                        <td><span className={`pill ${p.method === 'CASH' ? 'pay-cash' : 'pay-credit'}`}>{p.method === 'CASH' ? 'Cash' : 'Credit'}</span></td>
+                        <td className={`num ${p.type === 'Refund' ? '' : p.method === 'CASH' ? 'amt-cash' : 'amt-credit'}`}>{money(p.amount)}</td>
                         <td>{p.guest_name}</td>
                         <td>{p.room_number}</td>
                         <td>{fmtDate(p.check_in_date)}</td>
@@ -244,6 +268,7 @@ export default function TodayReport() {
                       </tr>
                     ))}
                   </tbody>
+                  <PaymentTotals payments={d.payments} m={d.money} />
                 </table>
               </div>
             )}
@@ -264,3 +289,37 @@ export default function TodayReport() {
     </>
   )
 }
+
+
+// Totals under "Payments received": payments, refunds, expenses and the net, split cash / credit.
+// Net cash = Cash in drawer; it matches the Cash drawer cards and the Room sheet footer.
+function PaymentTotals({ payments, m }) {
+  const add = (rows, method) => rows.filter((p) => p.method === method).reduce((a, p) => a + num(p.amount), 0)
+  const pays = payments.filter((p) => p.type !== 'Refund')
+  const refunds = payments.filter((p) => p.type === 'Refund')
+  const pc = add(pays, 'CASH'), pr = add(pays, 'CREDIT')
+  const rc = add(refunds, 'CASH'), rr = add(refunds, 'CREDIT')
+  const ec = -num(m.expenses_cash), er = -num(m.expenses_card)
+  const split = (cash, credit) => (
+    <td colSpan={4} className="pt-split">
+      <span className="amt-cash">Cash {money(cash)}</span>
+      <span className="amt-credit">Credit {money(credit)}</span>
+    </td>
+  )
+  return (
+    <tfoot className="pay-totals">
+      <tr><td colSpan={3}>Payments ({pays.length})</td><td className="num">{money(pc + pr)}</td>{split(pc, pr)}</tr>
+      {refunds.length > 0 && (
+        <tr className="refund-row"><td colSpan={3}>Refunds ({refunds.length})</td><td className="num">{money(rc + rr)}</td>{split(rc, rr)}</tr>
+      )}
+      {(ec !== 0 || er !== 0) && (
+        <tr className="pt-exp"><td colSpan={3}>Expenses<div className="tiny muted">Listed under Cash drawer</div></td><td className="num">{money(ec + er)}</td>{split(ec, er)}</tr>
+      )}
+      <tr className="pt-net">
+        <td colSpan={3}>Net total<div className="tiny muted">Cash = Cash in drawer</div></td>
+        <td className="num">{money(pc + pr + rc + rr + ec + er)}</td>{split(pc + rc + ec, pr + rr + er)}
+      </tr>
+    </tfoot>
+  )
+}
+
