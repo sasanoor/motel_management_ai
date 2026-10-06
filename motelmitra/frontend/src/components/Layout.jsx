@@ -4,6 +4,7 @@ import api from '../api'
 import { useAuth } from '../auth'
 import { fmtDay, ROLES, setBusinessDate, setWifiHosted } from '../utils'
 import { APP_VERSION } from '../version'
+import GridScroller from './GridScroller'
 
 const NAV = {
   SUPER_ADMIN: [
@@ -13,31 +14,37 @@ const NAV = {
   CLIENT_ADMIN: [
     { to: '/', label: 'Home', icon: '🏠', end: true },
     { to: '/check-in', label: 'New Check-in', icon: '➕' },
+    { to: '/today', label: "Today's Report", icon: '🗓️' },
+    { to: '/night-audit', label: 'Night Audit', icon: '🌙' },
+    { to: '/housekeeping', label: 'Housekeeping', icon: '🧹' },
     { to: '/stays', label: 'Guests', icon: '🧾' },
     { to: '/dnr', label: 'DNR List', icon: '⛔' },
     { to: '/balances', label: 'Balance Payments', icon: '💵' },
-    { to: '/today', label: "Today's Report", icon: '🗓️' },
-    { to: '/night-audit', label: 'Night Audit', icon: '🌙' },
+    { to: '/problems', label: 'Room Problems', icon: '⚠️' },
     { to: '/reports', label: 'Reports', icon: '📊' },
+    { to: '/directory', label: 'Guest Directory', icon: '📇' },
     { section: 'Setup' },
     { to: '/rooms', label: 'Rooms', icon: '🛏️' },
     { to: '/room-types', label: 'Room Types & Rates', icon: '🏷️' },
     { to: '/charges', label: 'Charges & Fees', icon: '💳' },
     { to: '/users', label: 'Users', icon: '👥' },
-    { to: '/directory', label: 'Guest Directory', icon: '📇' },
     { to: '/deleted', label: 'Deleted Guests', icon: '🗑️' },
   ],
   MAINTENANCE: [
-    { to: '/', label: 'Checkout Rooms', icon: '🧹', end: true },
+    { to: '/', label: 'Housekeeping', icon: '🧹', end: true },
+    { to: '/problems', label: 'Room Problems', icon: '⚠️' },
+    { to: '/notes', label: 'Checkouts & Notes', icon: '📝' },
   ],
   CLIENT_USER: [
     { to: '/', label: 'Home', icon: '🏠', end: true },
     { to: '/check-in', label: 'New Check-in', icon: '➕' },
+    { to: '/today', label: "Today's Report", icon: '🗓️' },
+    { to: '/night-audit', label: 'Night Audit', icon: '🌙' },
+    { to: '/housekeeping', label: 'Housekeeping', icon: '🧹' },
     { to: '/stays', label: 'Guests', icon: '🧾' },
     { to: '/dnr', label: 'DNR List', icon: '⛔' },
     { to: '/balances', label: 'Balance Payments', icon: '💵' },
-    { to: '/today', label: "Today's Report", icon: '🗓️' },
-    { to: '/night-audit', label: 'Night Audit', icon: '🌙' },
+    { to: '/problems', label: 'Room Problems', icon: '⚠️' },
     { to: '/reports', label: 'Reports', icon: '📊' },
     { to: '/directory', label: 'Guest Directory', icon: '📇' },
   ],
@@ -71,9 +78,10 @@ export default function Layout() {
 
   // Updated screens + old server = broken saves. Warn loudly until the app is restarted.
   const [serverVersion, setServerVersion] = useState(null)
+  const [gridButtons, setGridButtons] = useState(false) // GRID_SCROLL_BUTTONS in backend\.env
   useEffect(() => {
     const check = () => api.get('/version/')
-      .then((r) => { setServerVersion(r.data.version); setWifiHosted(r.data.wifi) })
+      .then((r) => { setServerVersion(r.data.version); setWifiHosted(r.data.wifi); setGridButtons(r.data.grid_scroll_buttons !== false) })
       .catch((e) => setServerVersion(e.response?.status === 404 ? 'old' : null))
     check()
     const t = setInterval(check, 60000)
@@ -118,13 +126,17 @@ export default function Layout() {
           )}
         </nav>
         <div className="sidebar-foot">
-          <div className="who">
-            <strong>{user.full_name}</strong>
-            <span>{ROLES[user.role]}</span>
+          <div className="who-row">
+            <div className="who">
+              <strong>{user.full_name}</strong>
+              <span>{ROLES[user.role]}</span>
+            </div>
+            <button type="button" className="logout-icon" title="Log out" aria-label="Log out" onClick={() => { logout(); navigate('/login') }}>
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" />
+              </svg>
+            </button>
           </div>
-          <button className="btn btn-ghost-light" onClick={() => { logout(); navigate('/login') }}>
-            Log out
-          </button>
           <div className="app-ver" title={serverVersion && serverVersion !== APP_VERSION ? `Server: ${serverVersion}` : 'Screens and server are on the same version'}>
             MotelMitra v{APP_VERSION}
           </div>
@@ -156,6 +168,7 @@ export default function Layout() {
               The business day is now <strong>{fmtDay(serverBiz)}</strong>. Finish what you are doing, then switch.
             </div>
           )}
+          {gridButtons && <GridScroller />}
           {usesDay && !biz ? <div className="muted">Loading…</div> : <Outlet key={biz || 'x'} context={{ biz, applyBiz, loadBiz }} />}
         </main>
       </div>

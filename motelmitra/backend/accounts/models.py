@@ -58,6 +58,8 @@ class User(AbstractUser):
         Client, null=True, blank=True, on_delete=models.CASCADE, related_name="users"
     )
     phone = models.CharField(max_length=30, blank=True)
+    # One login at a time: a new login replaces this key, and tokens from the older login stop working.
+    session_key = models.CharField(max_length=40, blank=True, default="")
 
     def save(self, *args, **kwargs):
         # Anyone created with `createsuperuser` becomes the platform super admin.

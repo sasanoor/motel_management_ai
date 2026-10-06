@@ -3,6 +3,7 @@ import api, { errorText } from '../api'
 import { useAuth } from '../auth'
 import { fmtDateTime } from '../utils'
 import { Alert, Empty } from './ui'
+import { confirmBox } from '../confirm'
 
 /** Front desk writes notes for maintenance for a date (Home screen tab). */
 export default function NotesPanel({ date, rooms, onCount }) {
@@ -45,7 +46,11 @@ export default function NotesPanel({ date, rooms, onCount }) {
   }
 
   async function remove(n) {
-    if (!window.confirm('Delete this note?')) return
+    const ok = await confirmBox({
+      title: 'Delete note?',
+      details: [['Note', n.text.length > 120 ? n.text.slice(0, 120) + '…' : n.text]],
+    })
+    if (!ok) return
     try { await api.delete(`/notes/${n.id}/`); load() } catch (e) { setErr(errorText(e)) }
   }
 

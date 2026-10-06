@@ -1,16 +1,16 @@
 import { Fragment } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { dayOfStay, daysLeft, fmtDate, fmtTime, money, num, rateTypeInfo } from '../utils'
-import { BalanceCell, Empty } from './ui'
+import { BalanceCell, Empty, HkPill, IssueBadge } from './ui'
 
 /**
  * Every room for one date. A room rented more than once gets one row per entry;
  * vacant rooms get an empty row with a Check in button.
  *
- * report = true (Today's Report): only that day's entries. Daily stays checked in on the date,
- * plus weekly / monthly stays the date falls inside. Rooms open for the night are always shown
- * (Vacant / Free for tonight), so the clerk sees what can be rented; a room taken by a daily
- * stay-over with no entry for the day is left out.
+ * report = true (Today's Report): stays checked in on the date, plus every guest still in the room
+ * tonight from an earlier check-in (daily stay-overs paid ahead, weekly, monthly). Those show
+ * "Paid ... by <date>" and are not added to the day's Total or money. Rooms open for the night are
+ * always shown (Vacant / Free for tonight), so the clerk sees what can be rented.
  */
 export default function RoomSheet({ date, rooms, stays: allStays, dayMoney, onPay, onCheckout, onAddStay, report = false }) {
   const navigate = useNavigate()
@@ -18,7 +18,7 @@ export default function RoomSheet({ date, rooms, stays: allStays, dayMoney, onPa
 
   const stays = report
     ? allStays.filter((s) => s.check_in_date === date ||
-        (s.rate_type !== 'DAILY' && s.check_in_date <= date && date < s.check_out_date))
+        ((s.rate_type !== 'DAILY' || s.status === 'CHECKED_IN') && s.check_in_date <= date && date < s.check_out_date))
     : allStays
 
   const sorted = [...rooms].sort((a, b) => a.number.localeCompare(b.number, undefined, { numeric: true }))
@@ -111,7 +111,8 @@ export default function RoomSheet({ date, rooms, stays: allStays, dayMoney, onPa
               {list.length === 0 ? (
                 <tr>
                   <td><span className="room-chip">{room.number}</span><div className="tiny muted">{room.room_type}</div></td>
-                  <td colSpan={7} className="muted vacant-cell">Vacant · {money(room.default_rate)}</td>
+                  <td colSpan={7} className="muted vacant-cell">Vacant · {money(room.default_rate)} <HkPill status={room.hk_status} note={room.hk_note} /> <IssueBadge count={room.open_issues} />
+                    {room.hk_status === 'OUT_OF_ORDER' && room.hk_note && <span className="tiny muted"> {room.hk_note}</span>}</td>
                   {checkInCell(room)}
                 </tr>
               ) : (
@@ -122,7 +123,7 @@ export default function RoomSheet({ date, rooms, stays: allStays, dayMoney, onPa
                   <Fragment key={s.id}>
                     <tr className="clickable" onClick={() => navigate(`/stays/${s.id}`)}>
                       <td>
-                        {i === 0 && <><span className="room-chip">{room.number}</span><div className="tiny muted">{room.room_type}</div></>}
+                        {i === 0 && <><span className="room-chip">{room.number}</span><div className="tiny muted">{room.room_type}</div><IssueBadge count={room.open_issues} /></>}
                         {i > 0 && <span className="tiny muted">{room.number} · #{i + 1}</span>}
                       </td>
                       <td className="sheet-guest">
@@ -166,7 +167,7 @@ export default function RoomSheet({ date, rooms, stays: allStays, dayMoney, onPa
                     {i === list.length - 1 && (report ? room.available : freeTonight(list)) && (
                       <tr className="rent-again">
                         <td></td>
-                        <td colSpan={7} className="muted vacant-cell">Free for tonight</td>
+                        <td colSpan={7} className="muted vacant-cell">Free for tonight <HkPill status={room.hk_status} note={room.hk_note} /></td>
                         {checkInCell(room)}
                       </tr>
                     )}

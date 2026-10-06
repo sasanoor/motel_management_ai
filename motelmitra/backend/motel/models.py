@@ -35,6 +35,18 @@ class Room(models.Model):
     notes = models.CharField(max_length=255, blank=True)
     is_active = models.BooleanField(default=True)
 
+    # Housekeeping status (for the room when nobody is in it). Checkout makes it DIRTY.
+    READY = "READY"
+    DIRTY = "DIRTY"
+    CLEANING = "CLEANING"
+    OUT_OF_ORDER = "OUT_OF_ORDER"
+    HK_CHOICES = [(READY, "Ready"), (DIRTY, "Dirty"), (CLEANING, "Cleaning"), (OUT_OF_ORDER, "Out of order")]
+    hk_status = models.CharField(max_length=14, choices=HK_CHOICES, default=READY)
+    hk_note = models.CharField(max_length=255, blank=True)   # out of order reason
+    hk_updated_at = models.DateTimeField(null=True, blank=True)
+    hk_updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                      related_name="+")
+
     class Meta:
         ordering = ["number"]
         unique_together = ("client", "number")
@@ -68,6 +80,13 @@ class Guest(models.Model):
     )
     # v2: license card image
     license_card = models.FileField(upload_to="license_cards/", blank=True, null=True)
+    # Guest Directory delete (admin only). Soft delete: hidden from the directory, check-in lookups and
+    # the DNR check; the guest's stays and payments stay in every report. Admin can recover.
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="guests_deleted"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -160,6 +179,12 @@ class Stay(models.Model):
     damage_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     # early checkout: room charge for the nights actually used, and the booking as it was before
     room_charge_override = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    # Add stay with a different rent type or rate (e.g. a daily guest adds 1 week at the weekly rate):
+    # those nights sit at the end of the stay and are charged here, not at `rate`.
+    extra_stay_nights = models.PositiveIntegerField(default=0)
+    extra_stay_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    # "Check in again" with the old balance added: + on the new stay (brought in), - on the old stay (moved out)
+    balance_carried = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     early_snapshot = models.JSONField(null=True, blank=True)
 
     clerk = models.ForeignKey(
@@ -190,9 +215,12 @@ class Stay(models.Model):
     def save(self, *args, **kwargs):
         days = (self.check_out_date - self.check_in_date).days
         self.num_days = max(days, 1)
-        self.periods = self.calc_periods(self.rate_type, self.check_in_date, self.check_out_date, self.periods)
+        base_out = self.check_out_date - datetime.timedelta(days=self.extra_stay_nights or 0)
+        if base_out <= self.check_in_date:
+            base_out = self.check_in_date + datetime.timedelta(days=1)
+        self.periods = self.calc_periods(self.rate_type, self.check_in_date, base_out, self.periods)
         self.total_amount = (
-            self.room_charge + self.charges_total + Decimal(self.adjustment or 0)
+            self.room_charge + self.charges_total + Decimal(self.adjustment or 0) + Decimal(self.balance_carried or 0)
         ).quantize(Decimal("0.01"))
         super().save(*args, **kwargs)
 
@@ -210,7 +238,7 @@ class Stay(models.Model):
     def room_charge(self):
         if self.room_charge_override is not None:
             return Decimal(self.room_charge_override).quantize(Decimal("0.01"))
-        return (Decimal(self.rate) * self.periods).quantize(Decimal("0.01"))
+        return (Decimal(self.rate) * self.periods + Decimal(self.extra_stay_charge or 0)).quantize(Decimal("0.01"))
 
     @property
     def charges_total(self):
@@ -226,7 +254,8 @@ class Stay(models.Model):
     @property
     def nightly_value(self):
         """Room revenue per night, used for occupancy / ADR on weekly and monthly stays."""
-        return (self.total_amount / max(self.num_days, 1)).quantize(Decimal("0.01"))
+        own = self.total_amount - Decimal(self.balance_carried or 0)
+        return (own / max(self.num_days, 1)).quantize(Decimal("0.01"))
 
     @property
     def amount_paid(self):
@@ -362,12 +391,14 @@ class Photo(models.Model):
     DL_FRONT = "DL_FRONT"
     DL_BACK = "DL_BACK"
     DAMAGE = "DAMAGE"
-    KINDS = [(DL_FRONT, "DL front"), (DL_BACK, "DL back"), (DAMAGE, "Room damage")]
+    ISSUE = "ISSUE"
+    KINDS = [(DL_FRONT, "DL front"), (DL_BACK, "DL back"), (DAMAGE, "Room damage"), (ISSUE, "Room problem")]
 
     client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="photos")
     guest = models.ForeignKey(Guest, null=True, blank=True, on_delete=models.SET_NULL, related_name="photos")
     stay = models.ForeignKey("Stay", null=True, blank=True, on_delete=models.SET_NULL, related_name="photos")
     session = models.ForeignKey(PhotoSession, null=True, blank=True, on_delete=models.SET_NULL, related_name="photos")
+    issue = models.ForeignKey("RoomIssue", null=True, blank=True, on_delete=models.SET_NULL, related_name="photos")
     kind = models.CharField(max_length=12, choices=KINDS)
     file = models.FileField(max_length=255)
     via = models.CharField(max_length=10, blank=True)  # PHONE / WEBCAM / FILE
@@ -387,6 +418,13 @@ def photo_target(photo):
     from django.utils import timezone as tz
     when = tz.localtime(photo.created_at or tz.now())
     stamp = when.strftime("%Y%m%d-%H%M")
+    if photo.issue_id:
+        # room problems: media/Problems/Room-<n>/<stamp>_<room>_PROBLEM-<issue id>_<n>.jpg
+        room = photo.issue.room.number
+        safe_room = "".join(ch for ch in str(room) if ch.isalnum() or ch in "-_") or "X"
+        others = Photo.objects.filter(issue_id=photo.issue_id).exclude(pk=photo.pk)
+        n = 1 + sum(1 for o in others if o.created_at and photo.created_at and o.created_at <= photo.created_at)
+        return f"Problems/Room-{safe_room}/{stamp}_{safe_room}_PROBLEM-{photo.issue_id}_{n}.jpg"
     if photo.stay_id:
         st = photo.stay
         folder = f"{st.check_in_date:%Y-%m-%d}/Room-{st.room.number}"
@@ -477,3 +515,75 @@ def attach_photos(stay, photo_ids, reuse_dl=False):
                     .exclude(stay=stay).order_by("-created_at").first())
             if last:
                 copy_photo(last, stay=stay)
+
+
+class CustomReport(models.Model):
+    """A report a motel builds itself on Reports -> Custom reports (source, columns, filters, grouping)."""
+
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="custom_reports")
+    name = models.CharField(max_length=100)
+    config = models.JSONField(default=dict)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="custom_reports")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+        constraints = [models.UniqueConstraint(fields=["client", "name"], name="unique_custom_report_name")]
+
+    def __str__(self):
+        return self.name
+
+
+class RoomStatusLog(models.Model):
+    """Every housekeeping change: status changes, stay-over service, and renting a room that was not ready
+    (who did it, when). Kept for the record."""
+
+    STATUS = "STATUS"
+    SERVICE = "SERVICE"        # stay-over room serviced (to_status DONE / DECLINED)
+    OVERRIDE = "OVERRIDE"      # checked a guest into a room that was not ready / out of order
+    ACTIONS = [(STATUS, "Status"), (SERVICE, "Service"), (OVERRIDE, "Rented while not ready")]
+
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="room_logs")
+    room = models.ForeignKey(Room, on_delete=models.CASCADE, related_name="status_logs")
+    action = models.CharField(max_length=10, choices=ACTIONS)
+    from_status = models.CharField(max_length=14, blank=True)
+    to_status = models.CharField(max_length=14, blank=True)
+    note = models.CharField(max_length=255, blank=True)
+    business_date = models.DateField(db_index=True)
+    stay = models.ForeignKey("Stay", null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
+class RoomIssue(models.Model):
+    """A problem in a room (leak, broken AC ...), reported by anyone and tracked until fixed."""
+
+    OPEN = "OPEN"
+    IN_PROGRESS = "IN_PROGRESS"
+    FIXED = "FIXED"
+    STATUSES = [(OPEN, "Open"), (IN_PROGRESS, "In progress"), (FIXED, "Fixed")]
+    CATEGORIES = [("PLUMBING", "Plumbing"), ("ELECTRICAL", "Electrical"), ("AC_HEAT", "AC / Heat"),
+                  ("TV_WIFI", "TV / WiFi"), ("FURNITURE", "Furniture"), ("PESTS", "Pests"),
+                  ("CLEANLINESS", "Cleanliness"), ("OTHER", "Other")]
+    PRIORITIES = [("LOW", "Low"), ("NORMAL", "Normal"), ("URGENT", "Urgent")]
+
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="room_issues")
+    room = models.ForeignKey(Room, on_delete=models.CASCADE, related_name="issues")
+    category = models.CharField(max_length=12, choices=CATEGORIES, default="OTHER")
+    priority = models.CharField(max_length=8, choices=PRIORITIES, default="NORMAL")
+    description = models.TextField()
+    status = models.CharField(max_length=12, choices=STATUSES, default=OPEN)
+    made_out_of_order = models.BooleanField(default=False)
+    reported_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+")
+    fixed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    fixed_at = models.DateTimeField(null=True, blank=True)
+    history = models.JSONField(default=list, blank=True)   # [{at, by, status, note}]
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]

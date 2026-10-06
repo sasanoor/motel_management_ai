@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { fmtDate, money, rateFor, rateTypeInfo } from '../utils'
+import { HkPill, IssueBadge } from './ui'
 
 /**
  * Searchable room dropdown.
@@ -88,6 +89,8 @@ export default function RoomPicker({ rooms, value, onChange, currentRoomId, rate
           <span className="rp-value">
             <strong>{selected.number}</strong> · {selected.room_type} · {money(rateFor(selected, rateType))}{short}
             {isBusy(selected) && <span className="pill pill-warn ml">Occupied</span>}
+            {!isBusy(selected) && <> <HkPill status={selected.hk_status} note={selected.hk_note} /></>}
+            <IssueBadge count={selected.open_issues} />
           </span>
         ) : <span className="muted">Select room…</span>}
         <span className="rp-caret">▾</span>
@@ -131,7 +134,10 @@ export default function RoomPicker({ rooms, value, onChange, currentRoomId, rate
                     <span className="rp-status">
                       {busy
                         ? <span className="pill pill-warn">{r.guest_name} till {fmtDate(r.check_out_date)}</span>
-                        : <span className="pill pill-green">Vacant</span>}
+                        : (r.hk_status && r.hk_status !== 'READY'
+                          ? <HkPill status={r.hk_status} note={r.hk_note} />
+                          : <span className="pill pill-green">Vacant</span>)}
+                      <IssueBadge count={r.open_issues} />
                     </span>
                     <span className="rp-rate">{money(rateFor(r, rateType))}<span className="tiny muted">{short}</span></span>
                   </div>

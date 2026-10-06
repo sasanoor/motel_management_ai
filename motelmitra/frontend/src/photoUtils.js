@@ -24,7 +24,7 @@ export async function compressImage(file, max = 1600, quality = 0.82) {
 }
 
 /** Upload one photo. stay / guest optional (none = waits until the check-in is saved). */
-export async function uploadPhoto(file, { kind, stay, guest, via }) {
+export async function uploadPhoto(file, { kind, stay, guest, via, issue }) {
   const blob = await compressImage(file)
   const fd = new FormData()
   fd.append('image', blob, 'photo.jpg')
@@ -32,6 +32,7 @@ export async function uploadPhoto(file, { kind, stay, guest, via }) {
   fd.append('via', via || 'FILE')
   if (stay) fd.append('stay', stay)
   if (guest) fd.append('guest', guest)
+  if (issue) fd.append('issue', issue)
   const { data } = await api.post('/photos/', fd)
   return data
 }

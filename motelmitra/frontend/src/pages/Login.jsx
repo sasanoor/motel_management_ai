@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { errorText } from '../api'
+import { errorText, takeSignOutReason } from '../api'
 import { useAuth } from '../auth'
 import { Alert } from '../components/ui'
 import { APP_VERSION } from '../version'
@@ -11,6 +11,7 @@ export default function Login() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [err, setErr] = useState('')
+  const [notice] = useState(takeSignOutReason)
   const [busy, setBusy] = useState(false)
 
   async function submit(e) {
@@ -36,6 +37,7 @@ export default function Login() {
             <div className="brand-sub">Front desk, simplified</div>
           </div>
         </div>
+        <Alert kind="info">{notice}</Alert>
         <Alert>{err}</Alert>
         <label>Username
           <input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus required autoComplete="username" />

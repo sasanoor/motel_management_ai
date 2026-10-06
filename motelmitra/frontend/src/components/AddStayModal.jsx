@@ -1,15 +1,17 @@
 import { useState } from 'react'
 import api, { errorText } from '../api'
-import { addDays, addMonths, daysBetween, fmtDate, money, num } from '../utils'
+import { addDays, addMonths, daysBetween, fmtDate, money, num, RATE_TYPES } from '../utils'
 import usePayment from '../usePayment'
 import PaymentCollected from './PaymentCollected'
 import { Alert, Modal } from './ui'
+import { confirmBox } from '../confirm'
 
 const UNIT = { DAILY: 'night', WEEKLY: 'week', MONTHLY: 'month' }
 
 /**
- * Add stay: the guest stays longer (usually paying in advance). Same entry and rate,
- * new checkout date, payment taken now (counted on today's business day).
+ * Add stay: the guest stays longer (usually paying in advance). Same entry, new checkout date,
+ * payment taken now (counted on today's business day). Rent by Daily / Weekly / Monthly like
+ * check-in: the stay's own type and rate by default, or another type at the room type's rate.
  */
 export default function AddStayModal({ stay, onClose, onSaved }) {
   const [n, setN] = useState('1')
@@ -18,13 +20,17 @@ export default function AddStayModal({ stay, onClose, onSaved }) {
   const [busy, setBusy] = useState(false)
 
   const r2 = (x) => Math.round(x * 100) / 100
-  const type = stay.rate_type || 'DAILY'
+  const own = stay.rate_type || 'DAILY'
+  const [type, setType] = useState(own)
+  const defaultRate = (t) => (t === own ? num(stay.rate) : num(stay.room_rates?.[t])).toFixed(2)
+  const [rate, setRate] = useState(defaultRate(own))
+  const pickType = (t) => { setType(t); setRate(defaultRate(t)) }
   const unit = UNIT[type]
   const count = Math.max(Math.floor(num(n)), 0)
   const newOut = type === 'WEEKLY' ? addDays(stay.check_out_date, 7 * count)
     : type === 'MONTHLY' ? addMonths(stay.check_out_date, count) : addDays(stay.check_out_date, count)
   const addedNights = daysBetween(stay.check_out_date, newOut)
-  const roomAdd = r2(num(stay.rate) * count)
+  const roomAdd = r2(num(rate) * count)
   const extraAdd = num(stay.extra_person_fee) && stay.num_days
     ? r2((num(stay.extra_person_fee) / stay.num_days) * addedNights) : 0
   // owed after adding the nights, before today's payment (same payment box as check-in)
@@ -36,12 +42,12 @@ export default function AddStayModal({ stay, onClose, onSaved }) {
     setBusy(true); setErr('')
     try {
       const { data } = await api.post(`/stays/${stay.id}/extend/`, {
-        periods: count, ...p.body(), notes, allow_overlap: allowOverlap,
+        periods: count, rate_type: type, rate, ...p.body(), notes, allow_overlap: allowOverlap,
       })
       onSaved(data)
     } catch (e2) {
       const overlap = e2.response?.data?.overlap
-      if (overlap && !allowOverlap && window.confirm(overlap)) return save(null, true)
+      if (overlap && !allowOverlap && await confirmBox({ title: 'Room is booked later', message: overlap, tone: 'primary', confirmText: 'Add stay anyway' })) return save(null, true)
       setErr(errorText(e2))
       setBusy(false)
     }
@@ -59,9 +65,20 @@ export default function AddStayModal({ stay, onClose, onSaved }) {
       <form onSubmit={save}>
         <div className="form-grid cols-4">
           <div className="subhead span-4">Stay</div>
+          <div className="field span-2">
+            <span className="field-label">Rent by</span>
+            <div className="seg">
+              {RATE_TYPES.map((t) => (
+                <button type="button" key={t.key} className={type === t.key ? 'on' : ''} onClick={() => pickType(t.key)}>{t.label}</button>
+              ))}
+            </div>
+          </div>
+          <label>Rate per {unit}
+            <input type="number" min="0" step="0.01" value={rate} onChange={(e) => setRate(e.target.value)} required />
+            <span className="hint">{type === own && num(rate) === num(stay.rate) ? 'Same rate as the stay' : `Room type ${RATE_TYPES.find((t) => t.key === type).label.toLowerCase()} rate ${money(stay.room_rates?.[type])}`}</span>
+          </label>
           <label>Add {unit}s
             <input type="number" min="1" step="1" value={n} onChange={(e) => setN(e.target.value)} autoFocus required />
-            <span className="hint">{money(stay.rate)} per {unit}, same rate as the stay</span>
           </label>
           <div className="readout">
             <span>New checkout</span>
@@ -71,7 +88,7 @@ export default function AddStayModal({ stay, onClose, onSaved }) {
           <div className="readout">
             <span>Room charge added</span>
             <strong>{money(roomAdd + extraAdd)}</strong>
-            <span className="tiny muted">{count} × {money(stay.rate)}{extraAdd > 0 && ` + extra person ${money(extraAdd)}`}</span>
+            <span className="tiny muted">{count} × {money(rate)}{extraAdd > 0 && ` + extra person ${money(extraAdd)}`}</span>
           </div>
           <div className="readout total-readout">
             <span>New total</span>

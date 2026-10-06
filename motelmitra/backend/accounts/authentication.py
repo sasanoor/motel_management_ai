@@ -1,0 +1,39 @@
+"""One login per user: the newest login wins.
+
+Every login gets a new session key, stored on the user and inside the login tokens ("sid").
+A token whose sid is not the user's current key belongs to an older login on another PC / phone,
+so it is refused and that screen goes back to the login page with a message.
+"""
+from rest_framework.exceptions import AuthenticationFailed
+from rest_framework_simplejwt.authentication import JWTAuthentication
+from rest_framework_simplejwt.exceptions import InvalidToken
+from rest_framework_simplejwt.serializers import TokenRefreshSerializer
+from rest_framework_simplejwt.tokens import RefreshToken
+
+SESSION_REPLACED = "session_replaced"
+MESSAGE = "You were signed out because this user logged in on another computer or phone."
+
+
+def _stale(user, sid):
+    return bool(user and user.session_key) and sid != user.session_key
+
+
+class SingleSessionJWTAuthentication(JWTAuthentication):
+    def get_user(self, validated_token):
+        user = super().get_user(validated_token)
+        if _stale(user, validated_token.get("sid")):
+            raise AuthenticationFailed({"detail": MESSAGE, "code": SESSION_REPLACED})
+        return user
+
+
+class SingleSessionRefreshSerializer(TokenRefreshSerializer):
+    def validate(self, attrs):
+        from .models import User
+        try:
+            token = RefreshToken(attrs["refresh"])
+        except Exception:
+            return super().validate(attrs)   # expired / broken: the usual error
+        user = User.objects.filter(pk=token.get("user_id")).first()
+        if _stale(user, token.get("sid")):
+            raise InvalidToken({"detail": MESSAGE, "code": SESSION_REPLACED})
+        return super().validate(attrs)

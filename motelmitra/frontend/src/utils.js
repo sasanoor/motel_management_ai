@@ -134,3 +134,22 @@ export function nameParts(g = {}) {
 }
 
 export const fullName = (p) => [p.first_name, p.middle_name, p.last_name].map((x) => (x || '').trim()).filter(Boolean).join(' ')
+
+/**
+ * One CSV cell. Text starting with = + - @ (or a tab / return) is run as a formula by Excel,
+ * so a guest named =HYPERLINK(...) could plant a live link in an export. Such text gets a leading '
+ * (numbers like -140.00 are left alone).
+ */
+export function csvCell(v) {
+  let t = String(v ?? '')
+  if (/^[=+\-@\t\r]/.test(t) && !/^[-+]?\d+(\.\d+)?$/.test(t)) t = `'${t}`
+  return `"${t.replace(/"/g, '""')}"`
+}
+
+/** Housekeeping status of a room: label and pill colour. */
+export const HK = {
+  READY: { label: 'Ready', cls: 'pill-green' },
+  DIRTY: { label: 'Dirty', cls: 'pill-warn' },
+  CLEANING: { label: 'Cleaning', cls: 'pill-blue' },
+  OUT_OF_ORDER: { label: 'Out of order', cls: 'pill-dark' },
+}

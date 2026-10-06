@@ -2,7 +2,7 @@ import { useState } from 'react'
 import api, { errorText } from '../api'
 import usePayment from '../usePayment'
 import PaymentCollected from './PaymentCollected'
-import { money, num } from '../utils'
+import { money, num, HK } from '../utils'
 
 export function Modal({ title, onClose, children, width = 520 }) {
   return (
@@ -16,6 +16,19 @@ export function Modal({ title, onClose, children, width = 520 }) {
       </div>
     </div>
   )
+}
+
+/** Room housekeeping status pill. Ready is hidden unless showReady. */
+export function HkPill({ status, note, showReady = false }) {
+  if (!status || (status === 'READY' && !showReady)) return null
+  const h = HK[status] || { label: status, cls: 'pill-grey' }
+  return <span className={`pill hk-pill ${h.cls}`} title={note || h.label}>{h.label}</span>
+}
+
+/** ⚠ open room problems badge */
+export function IssueBadge({ count }) {
+  if (!count) return null
+  return <span className="pill pill-red issue-badge" title={`${count} open room problem${count === 1 ? '' : 's'}`}>⚠ {count}</span>
 }
 
 export function Alert({ kind = 'error', children }) {

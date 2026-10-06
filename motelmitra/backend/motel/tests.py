@@ -91,7 +91,9 @@ class MotelFlowTests(APITestCase):
         self.login("owner", "owner123")
         self.assertEqual(self.client.delete(f"/api/stays/{stay['id']}/").status_code, 204)
         self.assertTrue(any(s["id"] == stay["id"] for s in self.client.get("/api/stays/deleted/").data))
-        self.assertEqual(self.client.post(f"/api/stays/{stay['id']}/restore/").status_code, 200)
+        # the room was knowingly rented twice above, so recover asks first (no silent double booking)
+        self.assertEqual(self.client.post(f"/api/stays/{stay['id']}/restore/").status_code, 400)
+        self.assertEqual(self.client.post(f"/api/stays/{stay['id']}/restore/", {"force": True}, format="json").status_code, 200)
         self.assertEqual(self.client.get(f"/api/stays/{stay['id']}/").status_code, 200)
 
     def test_dnr_and_dashboard_and_reports(self):
@@ -529,6 +531,11 @@ class BusinessDayTests(APITestCase):
         r = self.client.post("/api/business-day/reopen/")
         self.assertEqual((r.status_code, r.data["business_date"]), (200, self.today))
         self.assertEqual(len(self.client.get("/api/business-day/history/").data), 0)
+        # closed by mistake: the $52 taken after the close moves back to the reopened day
+        self.assertEqual(r.data["moved_payments"], 1)
+        self.assertIn("Moved back", r.data["note"])
+        st = self.client.get(f"/api/stays/{s['id']}/").data
+        self.assertEqual(st["payments"][-1]["business_date"], str(self.today))
 
 
 class AddStayTests(APITestCase):
@@ -572,6 +579,34 @@ class AddStayTests(APITestCase):
         self.assertEqual(r.status_code, 400)
         self.assertEqual(self.client.get(f"/api/stays/{w['id']}/").data["periods"], 3)
 
+
+    def test_add_stay_with_another_rent_type(self):
+        """Daily guest adds 1 week at the weekly rate (like check-in), then 1 more night at the daily rate."""
+        seed()
+        r = self.client.post("/api/auth/login/", {"username": "clerk", "password": "clerk123"}, format="json")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+        today = timezone.localdate()
+        free = [x for x in self.client.get("/api/rooms/board/").data if not x["occupied"]]
+        s = self.client.post("/api/stays/", {"room": free[0]["id"], "check_in_date": str(today), "check_in_time": "14:00",
+            "check_out_date": str(today + datetime.timedelta(days=2)), "check_out_time": "11:00", "num_guests": 1,
+            "rate": "70", "name": "Mixer"}, format="json").data
+        self.assertEqual(s["total_amount"], "140.00")
+        self.assertIn("WEEKLY", s["room_rates"])
+        r = self.client.post(f"/api/stays/{s['id']}/extend/", {"periods": 1, "rate_type": "WEEKLY", "rate": "350"}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        # 2 nights x 70 + 1 week 350, checkout +7 days
+        self.assertEqual((r.data["check_out_date"], r.data["num_days"], r.data["periods"], r.data["total_amount"]),
+                         (str(today + datetime.timedelta(days=9)), 9, 2, "490.00"))
+        self.assertEqual((r.data["extra_stay_nights"], r.data["extra_stay_charge"]), (7, "350.00"))
+        self.assertIn("Rate 350.00 per week", r.data["comments"])
+        # same type and rate again: 1 more daily night at 70
+        r = self.client.post(f"/api/stays/{s['id']}/extend/", {"periods": 1}, format="json")
+        self.assertEqual((r.data["num_days"], r.data["periods"], r.data["total_amount"]), (10, 3, "560.00"))
+        # no rate sent for another type: room type rate is used
+        r = self.client.post(f"/api/stays/{s['id']}/extend/", {"periods": 1, "rate_type": "MONTHLY"}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertGreater(float(r.data["extra_stay_charge"]), 350)
+        self.assertEqual(self.client.post(f"/api/stays/{s['id']}/extend/", {"periods": 1, "rate_type": "YEARLY"}, format="json").status_code, 400)
 
 class PaginationAndHistoryTests(APITestCase):
     def setUp(self):
@@ -949,6 +984,12 @@ class ScannerTests(APITestCase):
 
 
 class WifiSettingTests(APITestCase):
+    def test_version_reports_grid_scroll_buttons_setting(self):
+        from django.test import override_settings
+        for flag in (True, False):
+            with override_settings(GRID_SCROLL_BUTTONS=flag):
+                self.assertEqual(self.client.get("/api/version/").data["grid_scroll_buttons"], flag)
+
     def test_version_reports_wifi_and_phone_needs_wifi(self):
         seed()
         with override_settings(HOST_ON_WIFI=False):
@@ -988,3 +1029,321 @@ class SheetDayMoneyTests(APITestCase):
         rep = self.client.get("/api/reports/today/", {"date": str(d)}).data["money"]
         self.assertEqual((dm["expenses_cash"], dm["expenses_card"]), (rep["expenses_cash"], rep["expenses_card"]))
         self.assertAlmostEqual(float(dm["cash"]) - float(dm["expenses_cash"]), float(rep["cash_in_drawer"]), places=2)
+
+
+class GuestDirectoryDeleteTests(APITestCase):
+    def test_money_columns_admin_delete_and_recover(self):
+        seed()
+        def login(u, p):
+            r = self.client.post("/api/auth/login/", {"username": u, "password": p}, format="json")
+            self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+        login("clerk", "clerk123")
+        today = timezone.localdate()
+        free = [x for x in self.client.get("/api/rooms/board/").data if not x["occupied"]]
+        s = self.client.post("/api/stays/", {"room": free[0]["id"], "check_in_date": str(today), "check_in_time": "14:00",
+            "check_out_date": str(today + datetime.timedelta(days=2)), "check_out_time": "11:00", "num_guests": 1,
+            "rate": "50", "name": "Dee Leted", "phone": "806-555-7788", "cash": "60", "credit": "20"}, format="json").data
+        g = next(x for x in self.client.get("/api/guests/", {"q": "Dee Leted"}).data)
+        self.assertEqual((g["cash_paid"], g["card_paid"], g["balance"]), ("60.00", "20.00", "20.00"))
+        # clerk cannot delete, see deleted, or recover
+        self.assertEqual(self.client.delete(f"/api/guests/{g['id']}/").status_code, 403)
+        self.assertEqual(self.client.get("/api/guests/", {"deleted": "1"}).status_code, 403)
+        login("owner", "owner123")
+        self.assertEqual(self.client.delete(f"/api/guests/{g['id']}/").status_code, 204)
+        self.assertEqual(self.client.get("/api/guests/", {"q": "Dee Leted"}).data, [])
+        self.assertEqual(self.client.get("/api/guests/check/", {"phone": "806-555-7788"}).data, [])
+        dl = self.client.get("/api/guests/", {"deleted": "1"}).data
+        self.assertEqual([x["name"] for x in dl], ["Dee Leted"])
+        self.assertTrue(dl[0]["deleted_by_name"])
+        # the stay and its money stay in the reports
+        self.assertEqual(self.client.get(f"/api/stays/{s['id']}/").status_code, 200)
+        login("clerk", "clerk123")
+        self.assertEqual(self.client.post(f"/api/guests/{g['id']}/restore/").status_code, 403)
+        login("owner", "owner123")
+        r = self.client.post(f"/api/guests/{g['id']}/restore/")
+        self.assertEqual((r.status_code, r.data["is_deleted"], r.data["balance"]), (200, False, "20.00"))
+        self.assertEqual(len(self.client.get("/api/guests/", {"q": "Dee Leted"}).data), 1)
+
+
+class GuestGridFilterTests(APITestCase):
+    def test_column_filters(self):
+        seed()
+        r = self.client.post("/api/auth/login/", {"username": "clerk", "password": "clerk123"}, format="json")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+        today = timezone.localdate()
+        free = [x for x in self.client.get("/api/rooms/board/").data if not x["occupied"]]
+        a = self.client.post("/api/stays/", {"room": free[0]["id"], "check_in_date": str(today), "check_in_time": "14:00",
+            "check_out_date": str(today + datetime.timedelta(days=3)), "check_out_time": "11:00", "num_guests": 1,
+            "rate": "50", "name": "Filter Owes", "phone": "806-555-4321", "cash": "20"}, format="json").data
+        b = self.client.post("/api/stays/", {"room": free[1]["id"], "check_in_date": str(today), "check_in_time": "14:00",
+            "check_out_date": str(today + datetime.timedelta(days=1)), "check_out_time": "11:00", "num_guests": 1,
+            "rate": "50", "name": "Filter Paid", "cash": "50"}, format="json").data
+        get = lambda **kw: [x["id"] for x in self.client.get("/api/stays/", {"page": 1, "page_size": 100, **kw}).data["results"]]
+        self.assertEqual(get(name="filter owes"), [a["id"]])
+        self.assertEqual(get(phone="4321"), [a["id"]])
+        self.assertEqual(get(room=free[1]["number"], name="Filter"), [b["id"]])
+        self.assertEqual(get(days=3, name="Filter"), [a["id"]])
+        self.assertEqual(get(balance="owed", name="Filter"), [a["id"]])
+        self.assertEqual(get(balance="paid", name="Filter"), [b["id"]])
+        self.assertEqual(get(balance="credit", name="Filter"), [])
+        self.assertEqual(get(check_out_date=str(today + datetime.timedelta(days=1)), name="Filter"), [b["id"]])
+        self.assertEqual(self.client.get("/api/stays/", {"page": 1, "balance": "x"}).status_code, 400)
+
+
+class CustomReportTests(APITestCase):
+    def setUp(self):
+        seed()
+        self.today = timezone.localdate()
+
+    def login(self, u, p):
+        r = self.client.post("/api/auth/login/", {"username": u, "password": p}, format="json")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+
+    def test_run_group_filter_and_saved(self):
+        self.login("clerk", "clerk123")
+        t = self.today
+        free = [x for x in self.client.get("/api/rooms/board/").data if not x["occupied"]]
+        for i, (name, cash, credit) in enumerate([("CR One", "50", "0"), ("CR Two", "0", "70"), ("CR One", "20", "0")]):
+            self.client.post("/api/stays/", {"room": free[i]["id"], "check_in_date": str(t), "check_in_time": "14:00",
+                "check_out_date": str(t + datetime.timedelta(days=1)), "check_out_time": "11:00", "num_guests": 1,
+                "rate": "70", "name": name, "phone": f"806-555-90{i}0" if name == "CR Two" else "806-555-1111",
+                "cash": cash, "credit": credit}, format="json")
+        self.client.post("/api/expenses/", {"amount": "12", "method": "CASH", "description": "Soap"}, format="json")
+        f = self.client.get("/api/reports/custom/fields/").data
+        self.assertEqual([s["key"] for s in f["sources"]], ["stays", "payments", "expenses", "problems", "guests"])
+        run = lambda **cfg: self.client.post("/api/reports/custom/run/", {"start": str(t), "end": str(t), **cfg}, format="json")
+        # detail with a filter
+        r = run(source="stays", columns=["room", "guest", "total", "cash", "credit", "balance"],
+                filters=[{"field": "guest", "op": "contains", "value": "cr "}], sort="guest")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(r.data["count"], 3)
+        self.assertEqual(r.data["totals"]["cash"], "70.00")
+        self.assertEqual(r.data["totals"]["credit"], "70.00")
+        # grouped by guest
+        r = run(source="stays", columns=["guest", "total", "balance"], group_by="guest",
+                filters=[{"field": "guest", "op": "contains", "value": "CR"}], sort="_count", sort_dir="desc")
+        self.assertTrue(r.data["grouped"])
+        self.assertEqual(r.data["rows"][0][:2], ["CR One", 2])
+        # number filter + payments + expenses + guests sources
+        self.assertEqual(run(source="stays", filters=[{"field": "balance", "op": "gt", "value": "0"}, {"field": "guest", "op": "contains", "value": "CR"}]).data["count"], 2)
+        p = run(source="payments", columns=["method", "amount"], group_by="method", filters=[{"field": "guest", "op": "contains", "value": "CR"}]).data
+        self.assertEqual(dict((row[0], row[2]) for row in p["rows"]), {"Cash": "70.00", "Credit": "70.00"})
+        e = run(source="expenses", columns=["description", "amount"]).data
+        self.assertIn(["Soap", "12.00"], e["rows"])
+        g = run(source="guests", columns=["guest", "stays", "total"], filters=[{"field": "stays", "op": "gte", "value": "2"}]).data
+        self.assertEqual(g["rows"], [["CR One", 2, "140.00"]])
+        self.assertEqual(run(source="nope").status_code, 400)
+        self.assertEqual(run(source="stays", end=str(t - datetime.timedelta(days=1))).status_code, 400)
+        # save / list / only creator or admin can change
+        cfg = {"source": "stays", "columns": ["guest", "total"], "start": str(t), "end": str(t)}
+        s = self.client.post("/api/custom-reports/", {"name": "My guests", "config": cfg}, format="json")
+        self.assertEqual(s.status_code, 201, s.data)
+        self.assertEqual(self.client.post("/api/custom-reports/", {"name": "my guests", "config": cfg}, format="json").status_code, 400)
+        self.login("owner", "owner123")
+        self.assertEqual([x["name"] for x in self.client.get("/api/custom-reports/").data], ["My guests"])
+        o = self.client.post("/api/custom-reports/", {"name": "Owner only", "config": cfg}, format="json").data
+        self.login("clerk", "clerk123")
+        self.assertEqual(self.client.delete(f"/api/custom-reports/{o['id']}/").status_code, 403)
+        self.assertEqual(self.client.delete(f"/api/custom-reports/{s.data['id']}/").status_code, 204)
+
+
+class QABugFixTests(APITestCase):
+    """Bugs found in the QA pass (v1.18.1) and fixed in v1.18.2."""
+
+    def setUp(self):
+        seed()
+        self.t = timezone.localdate()
+
+    def login(self, u, p):
+        r = self.client.post("/api/auth/login/", {"username": u, "password": p}, format="json")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+
+    def stay(self, room, name, **kw):
+        body = {"room": room["id"], "check_in_date": str(self.t), "check_in_time": "14:00",
+                "check_out_date": str(self.t + datetime.timedelta(days=2)), "check_out_time": "11:00",
+                "num_guests": 1, "rate": "60", "name": name, "room_status_ok": True, **kw}
+        return self.client.post("/api/stays/", body, format="json")
+
+    def free(self):
+        return [x for x in self.client.get("/api/rooms/board/").data if not x["occupied"]]
+
+    def test_no_double_booking_on_undo_checkout_or_recover(self):
+        self.login("owner", "owner123")
+        r = self.free()[0]
+        carl = self.stay(r, "Carl Out").data
+        self.client.post(f"/api/stays/{carl['id']}/checkout/", {}, format="json")
+        self.stay(r, "Ned Next")
+        res = self.client.post(f"/api/stays/{carl['id']}/reopen/", {}, format="json")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("overlap", res.data)
+        self.assertEqual(self.client.post(f"/api/stays/{carl['id']}/reopen/", {"force": True}, format="json").status_code, 200)
+        r2 = self.free()[0]
+        dan = self.stay(r2, "Dan Deleted").data
+        self.client.delete(f"/api/stays/{dan['id']}/")
+        self.stay(r2, "Nina New")
+        res = self.client.post(f"/api/stays/{dan['id']}/restore/", {}, format="json")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("overlap", res.data)
+        self.assertEqual(self.client.post(f"/api/stays/{dan['id']}/restore/", {"force": True}, format="json").status_code, 200)
+
+    def test_huge_and_bad_amounts_are_400(self):
+        self.login("clerk", "clerk123")
+        s = self.stay(self.free()[0], "Big Number").data
+        for body in ({"cash": "99999999999"}, {"cash": "1", "adjustment_change": "99999999999"}, {"credit": "1e20"}):
+            r = self.client.post(f"/api/stays/{s['id']}/payments/", body, format="json")
+            self.assertEqual(r.status_code, 400, (body, r.status_code))
+        self.assertEqual(self.client.post(f"/api/stays/{s['id']}/extend/", {"periods": 1, "cash": "99999999999"}, format="json").status_code, 400)
+        self.assertEqual(self.client.get("/api/dashboard/").status_code, 200)   # nothing bad was saved
+
+    def test_input_rules(self):
+        self.login("owner", "owner123")
+        self.assertEqual(self.stay(self.free()[0], "Nobody", num_guests=0).status_code, 400)
+        self.assertEqual(self.client.post("/api/room-types/", {"name": "Neg", "default_rate": "-5"}, format="json").status_code, 400)
+        r = self.client.post("/api/reports/custom/run/", {"source": "stays", "filters": "oops"}, format="json")
+        self.assertEqual(r.status_code, 400)
+        r = self.client.post("/api/reports/custom/run/", {"source": "stays", "filters": ["x"], "columns": "guest"}, format="json")
+        self.assertEqual(r.status_code, 400)
+
+    def test_login_is_rate_limited(self):
+        from django.core.cache import cache
+        cache.clear()
+        codes = [self.client.post("/api/auth/login/", {"username": "clerk", "password": "wrong"}, format="json").status_code for _ in range(12)]
+        self.assertIn(429, codes)
+        cache.clear()
+
+    def test_photos_are_not_public_links(self):
+        self.assertEqual(self.client.get("/media/2026-10-04/Room-201/x_DL_1.jpg").status_code, 404)
+
+
+class HousekeepingTests(APITestCase):
+    def setUp(self):
+        seed()
+        self.t = timezone.localdate()
+
+    def login(self, u, p):
+        r = self.client.post("/api/auth/login/", {"username": u, "password": p}, format="json")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+
+    def stay(self, room, name, cin=0, cout=2, **kw):
+        body = {"room": room["id"], "check_in_date": str(self.t + datetime.timedelta(days=cin)), "check_in_time": "14:00",
+                "check_out_date": str(self.t + datetime.timedelta(days=cout)), "check_out_time": "11:00",
+                "num_guests": 1, "rate": "60", "name": name, **kw}
+        return self.client.post("/api/stays/", body, format="json")
+
+    def board_room(self, rid):
+        return next(x for x in self.client.get("/api/housekeeping/").data["rooms"] if x["id"] == rid)
+
+    def test_checkout_dirty_clean_ready_and_checkin_warning(self):
+        self.login("clerk", "clerk123")
+        room = next(x for x in self.client.get("/api/rooms/board/").data if not x["occupied"])
+        s = self.stay(room, "Hk One").data
+        self.client.post(f"/api/stays/{s['id']}/checkout/", {}, format="json")
+        self.assertEqual(self.board_room(room["id"])["hk_status"], "DIRTY")
+        # renting a dirty room asks first; saying yes is recorded with the clerk's name
+        r = self.stay(room, "Hk Two")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("room_status", r.data)
+        r = self.stay(room, "Hk Two", room_status_ok=True)
+        self.assertEqual(r.status_code, 201, r.data)
+        logs = self.client.get("/api/housekeeping/").data["log"]
+        self.assertTrue(any(l["action"] == "OVERRIDE" and l["by"] == "Maria" for l in logs))
+        # housekeeping cleans another room: dirty -> cleaning -> ready
+        self.login("maint", "maint123")
+        r2 = next(x for x in self.client.get("/api/housekeeping/").data["rooms"] if x["occupancy"] == "vacant")
+        for st in ("DIRTY", "CLEANING", "READY"):
+            res = self.client.post(f"/api/housekeeping/rooms/{r2['id']}/status/", {"status": st}, format="json")
+            self.assertEqual((res.status_code, res.data["hk_status"]), (200, st))
+        self.assertIsNone(self.board_room(r2["id"])["guest_name"])   # no guest names for housekeeping
+        self.assertEqual(self.client.post(f"/api/housekeeping/rooms/{r2['id']}/status/", {"status": "OUT_OF_ORDER"}, format="json").status_code, 400)
+        self.client.post(f"/api/housekeeping/rooms/{r2['id']}/status/", {"status": "OUT_OF_ORDER", "note": "Leak"}, format="json")
+        self.login("clerk", "clerk123")
+        r = self.stay({"id": r2["id"]}, "Hk Three")
+        self.assertEqual((r.status_code, r.data.get("room_status_code")), (400, ["OUT_OF_ORDER"]))
+
+    def test_checkout_then_check_in_again_is_not_a_room_to_clean(self):
+        """Bug 1: guest checks out and checks in again (same room): not on housekeeping's list, not dirty."""
+        self.login("clerk", "clerk123")
+        room = next(x for x in self.client.get("/api/rooms/board/").data if not x["occupied"])
+        s = self.stay(room, "Again Guest", cout=0 + 1).data
+        self.client.post(f"/api/stays/{s['id']}/checkout/", {}, format="json")
+        r = self.stay(room, "Again Guest", cout=3, renew_from=s["id"])
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(self.board_room(room["id"])["hk_status"], "READY")
+        self.login("maint", "maint123")
+        mb = self.client.get("/api/maintenance/").data
+        self.assertNotIn(room["number"], [x["room_number"] for x in mb["rooms"]])
+
+    def test_stay_over_service_and_problems(self):
+        self.login("clerk", "clerk123")
+        room = next(x for x in self.client.get("/api/rooms/board/").data if not x["occupied"])
+        self.stay(room, "Stay Over", cin=-1, cout=2, allow_overlap=True)
+        self.login("maint", "maint123")
+        self.assertEqual(self.board_room(room["id"])["service"], "NEEDED")
+        self.assertEqual(self.client.post(f"/api/housekeeping/rooms/{room['id']}/service/", {"status": "DONE"}, format="json").status_code, 201)
+        b = self.board_room(room["id"])
+        self.assertEqual((b["service"], b["service_by"]), ("DONE", "Jose"))
+        self.client.delete(f"/api/housekeeping/rooms/{room['id']}/service/")
+        self.assertEqual(self.board_room(room["id"])["service"], "NEEDED")
+        # problem reported by housekeeping, room out of order, fixed by the clerk
+        p = self.client.post("/api/room-problems/", {"room": room["id"], "category": "PLUMBING", "priority": "URGENT",
+                                                      "description": "Sink leaking", "out_of_order": True}, format="json")
+        self.assertEqual(p.status_code, 201, p.data)
+        self.assertEqual(self.board_room(room["id"])["hk_status"], "OUT_OF_ORDER")
+        self.assertEqual(self.board_room(room["id"])["open_issues"], 1)
+        self.login("clerk", "clerk123")
+        self.assertEqual(len(self.client.get("/api/room-problems/").data), 1)
+        r = self.client.patch(f"/api/room-problems/{p.data['id']}/", {"status": "FIXED", "note": "Plumber came"}, format="json")
+        self.assertEqual((r.data["status"], r.data["fixed_by_name"]), ("FIXED", "Maria"))
+        self.assertEqual([h["status"] for h in r.data["history"]], ["OPEN", "FIXED"])
+        self.assertEqual(len(self.client.get("/api/room-problems/").data), 0)
+        self.assertEqual(self.client.delete(f"/api/room-problems/{p.data['id']}/").status_code, 403)
+        rep = self.client.post("/api/reports/custom/run/", {"source": "problems", "start": str(self.t), "end": str(self.t),
+                                                             "group_by": "category"}, format="json").data
+        self.assertEqual(rep["rows"][0][:2], ["Plumbing", 1])
+
+
+
+class SingleLoginAndCarryTests(APITestCase):
+    def test_newest_login_wins(self):
+        seed()
+        a = self.client.post("/api/auth/login/", {"username": "clerk", "password": "clerk123"}, format="json").data
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {a['access']}")
+        self.assertEqual(self.client.get("/api/auth/me/").status_code, 200)
+        b = self.client.post("/api/auth/login/", {"username": "clerk", "password": "clerk123"}, format="json").data
+        # first PC: refused with a clear reason, and its refresh token is refused too
+        r = self.client.get("/api/auth/me/")
+        self.assertEqual((r.status_code, r.data.get("code")), (401, "session_replaced"))
+        self.client.credentials()
+        r = self.client.post("/api/auth/refresh/", {"refresh": a["refresh"]}, format="json")
+        self.assertEqual((r.status_code, r.data.get("code")), (401, "session_replaced"))
+        # second PC keeps working, refresh included
+        self.assertEqual(self.client.post("/api/auth/refresh/", {"refresh": b["refresh"]}, format="json").status_code, 200)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {b['access']}")
+        self.assertEqual(self.client.get("/api/auth/me/").status_code, 200)
+
+    def test_check_in_again_carries_balance(self):
+        seed()
+        r = self.client.post("/api/auth/login/", {"username": "clerk", "password": "clerk123"}, format="json")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+        today = timezone.localdate()
+        free = [x for x in self.client.get("/api/rooms/board/").data if not x["occupied"]]
+        old = self.client.post("/api/stays/", {"room": free[0]["id"], "check_in_date": str(today - datetime.timedelta(days=2)), "check_in_time": "14:00",
+            "check_out_date": str(today), "check_out_time": "11:00", "num_guests": 1, "rate": "70", "name": "Carry Over",
+            "cash": "40", "room_status_ok": True}, format="json").data
+        self.assertEqual(old["balance"], "100.00")
+        base = {"room": free[0]["id"], "check_in_date": str(today), "check_in_time": "12:00",
+                "check_out_date": str(today + datetime.timedelta(days=1)), "check_out_time": "11:00", "num_guests": 1,
+                "rate": "70", "guest_id": old["guest"]["id"], "name": "Carry Over", "renew_from": old["id"], "room_status_ok": True}
+        new = self.client.post("/api/stays/", {**base, "carry_balance": True}, format="json")
+        self.assertEqual(new.status_code, 201, new.data)
+        new = self.client.get(f"/api/stays/{new.data['id']}/").data
+        old2 = self.client.get(f"/api/stays/{old['id']}/").data
+        self.assertEqual((new["total_amount"], new["balance"], new["balance_carried"]), ("170.00", "170.00", "100.00"))
+        self.assertEqual((old2["status"], old2["balance"], old2["balance_carried"]), ("CHECKED_OUT", "0.00", "-100.00"))
+        # admin deletes the new stay: the old stay owes it again; recover moves it back
+        a = self.client.post("/api/auth/login/", {"username": "owner", "password": "owner123"}, format="json").data
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {a['access']}")
+        self.client.delete(f"/api/stays/{new['id']}/")
+        self.assertEqual(self.client.get(f"/api/stays/{old['id']}/").data["balance"], "100.00")
+        self.client.post(f"/api/stays/{new['id']}/restore/", {"force": True}, format="json")
+        self.assertEqual(self.client.get(f"/api/stays/{old['id']}/").data["balance"], "0.00")

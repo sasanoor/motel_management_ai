@@ -6,8 +6,9 @@ import AddStayModal from '../components/AddStayModal'
 import CheckoutModal from '../components/CheckoutModal'
 import ExpenseModal from '../components/ExpenseModal'
 import RoomSheet from '../components/RoomSheet'
-import { Alert, BalanceCell, Empty, PageHead, PaymentModal, Stat } from '../components/ui'
-import { addDays, fmtDate, fmtDateTime, fmtTime, money, num, todayISO, rateTypeInfo } from '../utils'
+import { Alert, Empty, HkPill, PageHead, PaymentModal, Stat } from '../components/ui'
+import { addDays, fmtDate, fmtDateTime, fmtTime, money, num, periodText, todayISO, rateTypeInfo } from '../utils'
+import { confirmBox } from '../confirm'
 
 /** End-of-day / shift handover report for the front desk. */
 export default function TodayReport() {
@@ -42,7 +43,12 @@ export default function TodayReport() {
   const sheetData = sheet?.date === date ? sheet.data : null
 
   async function deleteExpense(x) {
-    if (!window.confirm(`Delete expense "${x.description}" (${money(x.amount)})?`)) return
+    const ok = await confirmBox({
+      title: 'Delete expense?',
+      message: "It will be removed from today's Cash drawer. The record is kept for the admin.",
+      details: [['Description', x.description], ['Paid by', x.method === 'CASH' ? 'Cash' : 'Card'], ['Amount', money(x.amount)], ['Clerk', x.clerk_name]],
+    })
+    if (!ok) return
     try { await api.delete(`/expenses/${x.id}/`); reload() } catch (e) { setErr(errorText(e)) }
   }
 
@@ -152,6 +158,7 @@ export default function TodayReport() {
                         onClick={() => navigate(`/check-in?room=${r.id}&date=${date}`)}>
                         <span className="room-chip">{r.number}</span>
                         <span className="tiny muted">{r.room_type} · {money(r.default_rate)}</span>
+                        {r.hk_status && r.hk_status !== 'READY' && <HkPill status={r.hk_status} note={r.hk_note} />}
                       </button>
                     ))}
                   </div>
@@ -187,64 +194,65 @@ export default function TodayReport() {
             </>
           )}
 
-          <h2 className="section-title">Check-ins ({d.checkins.length})</h2>
-          <div className="card no-pad">
-            {!d.checkins.length ? <Empty>No check-ins.</Empty> : (
-              <div className="table-wrap">
-                <table className="table">
-                  <thead><tr><th>Time</th><th>Room</th><th>Guest</th><th className="num">Guests</th><th className="num">Nights</th><th>Checkout</th><th className="num">Rate</th><th className="num">Total</th><th className="num">Cash</th><th className="num">Credit</th><th className="num">Other days</th><th className="num">Balance</th><th>Clerk</th></tr></thead>
-                  <tbody>
-                    {d.checkins.map((r) => (
-                      <tr key={r.id} className="clickable" onClick={() => open(r.id)}>
-                        <td>{fmtTime(r.time)}</td>
-                        <td><span className="room-chip">{r.room_number}</span> <span className="tiny muted">{r.room_type}</span></td>
-                        <td>{r.guest_name}{r.do_not_rent && <span className="pill pill-red ml">DNR</span>}</td>
-                        <td className="num">{r.num_guests}</td>
-                        <td className="num">{r.num_days}</td>
-                        <td>{fmtDate(r.check_out_date)}</td>
-                        <td className="num">{money(r.rate)}<span className="tiny muted">{rateTypeInfo(r.rate_type).short}</span></td>
-                        <td className="num">{money(r.total)}</td>
-                        <td className="num">{money(r.cash)}</td>
-                        <td className="num">{money(r.credit)}</td>
-                        <td className="num">
-                          {num(r.paid_other_days) ? <span className="muted" title="Taken on another day; counted on that day">{money(r.paid_other_days)}</span> : <span className="muted">—</span>}
-                          {num(r.balance) <= 0 && <div><span className="pill pill-green">Paid</span></div>}
-                        </td>
-                        <td className="num"><BalanceCell value={r.balance} /></td>
-                        <td>{r.clerk}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                  <tfoot>
-                    <tr><td colSpan={7}>Total</td><td className="num">{money(d.money.booked)}</td>
-                      <td className="num">{money(d.checkins.reduce((a, r) => a + num(r.cash), 0))}</td>
-                      <td className="num">{money(d.checkins.reduce((a, r) => a + num(r.credit), 0))}</td>
-                      <td className="num muted">{money(d.checkins.reduce((a, r) => a + num(r.paid_other_days), 0))}</td>
-                      <td colSpan={2}></td></tr>
-                  </tfoot>
-                </table>
+          {/* Check-ins and Checkouts as compact cards (same style as Open tonight). Click one to open the stay. */}
+          <div className="card open-rooms entry-cards">
+            <div className="open-rooms-head">
+              <strong>Check-ins ({d.checkins.length})</strong>
+              {d.checkins.length > 0 && (
+                <span className="tiny muted">
+                  Total {money(d.money.booked)} · <span className="amt-cash">Cash {money(d.checkins.reduce((a, r) => a + num(r.cash), 0))}</span>
+                  {' · '}<span className="amt-credit">Credit {money(d.checkins.reduce((a, r) => a + num(r.credit), 0))}</span>
+                  {num(d.money.unpaid_from_todays_checkins) > 0 && <> · <span className="owed">Unpaid {money(d.money.unpaid_from_todays_checkins)}</span></>}
+                </span>
+              )}
+            </div>
+            {!d.checkins.length ? <span className="muted">No check-ins.</span> : (
+              <div className="open-rooms-list">
+                {d.checkins.map((r) => (
+                  <button key={r.id} type="button" className="open-room entry-chip" onClick={() => open(r.id)}
+                    title={`${r.guest_name} · ${r.num_guests} guest(s) · checkout ${fmtDate(r.check_out_date)} · ${money(r.rate)}${rateTypeInfo(r.rate_type).short} · clerk ${r.clerk}`}>
+                    <span className="ec-top">
+                      <span className="room-chip">{r.room_number}</span>
+                      <span className="ec-name">{r.guest_name}</span>
+                      {r.do_not_rent && <span className="pill pill-red">DNR</span>}
+                    </span>
+                    <span className="tiny muted">{fmtTime(r.time)} · {r.rate_type === 'DAILY' ? `${r.num_days} night${r.num_days === 1 ? '' : 's'}` : periodText(r.periods, r.rate_type)} · {money(r.total)}</span>
+                    {num(r.balance) > 0
+                      ? <span className="tiny owed">Owes {money(r.balance)}</span>
+                      : <span className="tiny ec-paid">Paid</span>}
+                  </button>
+                ))}
               </div>
             )}
           </div>
 
-          <h2 className="section-title">Checkouts ({d.checkouts.length})</h2>
-          <div className="card no-pad">
-            {!d.checkouts.length ? <Empty>No checkouts.</Empty> : (
-              <table className="table">
-                <thead><tr><th>Room</th><th>Guest</th><th>Checked in</th><th className="num">Total</th><th className="num">Balance</th><th>Status</th></tr></thead>
-                <tbody>
-                  {d.checkouts.map((r) => (
-                    <tr key={r.id} className="clickable" onClick={() => open(r.id)}>
-                      <td><span className="room-chip">{r.room_number}</span></td>
-                      <td>{r.guest_name}</td>
-                      <td>{fmtDate(r.check_in_date)}</td>
-                      <td className="num">{money(r.total)}</td>
-                      <td className="num"><BalanceCell value={r.balance} /></td>
-                      <td>{r.status === 'CHECKED_OUT' ? <span className="pill pill-grey">Checked out</span> : <span className="pill pill-red">Pending</span>}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          <div className="card open-rooms entry-cards">
+            <div className="open-rooms-head">
+              <strong>Checkouts ({d.checkouts.length})</strong>
+              {d.checkouts.length > 0 && (
+                <span className="tiny muted">
+                  {d.checkouts.filter((r) => r.status === 'CHECKED_OUT').length} checked out
+                  {d.checkouts.some((r) => r.status !== 'CHECKED_OUT') && <> · <span className="owed">{d.checkouts.filter((r) => r.status !== 'CHECKED_OUT').length} pending</span></>}
+                  {d.checkouts.some((r) => num(r.balance) > 0) && <> · <span className="owed">Owed {money(d.checkouts.reduce((a, r) => a + Math.max(num(r.balance), 0), 0))}</span></>}
+                </span>
+              )}
+            </div>
+            {!d.checkouts.length ? <span className="muted">No checkouts.</span> : (
+              <div className="open-rooms-list">
+                {d.checkouts.map((r) => (
+                  <button key={r.id} type="button" className={`open-room entry-chip ${r.status !== 'CHECKED_OUT' ? 'ec-pending' : ''}`} onClick={() => open(r.id)}
+                    title={`${r.guest_name} · checked in ${fmtDate(r.check_in_date)} · total ${money(r.total)}`}>
+                    <span className="ec-top">
+                      <span className="room-chip">{r.room_number}</span>
+                      <span className="ec-name">{r.guest_name}</span>
+                    </span>
+                    <span className="tiny muted">In {fmtDate(r.check_in_date)} · {money(r.total)}</span>
+                    {r.status !== 'CHECKED_OUT'
+                      ? <span className="tiny owed">Pending checkout{num(r.balance) > 0 ? ` · owes ${money(r.balance)}` : ''}</span>
+                      : num(r.balance) > 0 ? <span className="tiny owed">Owes {money(r.balance)}</span> : <span className="tiny muted">Checked out</span>}
+                  </button>
+                ))}
+              </div>
             )}
           </div>
 

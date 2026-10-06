@@ -3,6 +3,7 @@ import api, { errorText } from '../api'
 import { PhotoUploader } from '../components/Photos'
 import { Alert, Empty, Modal, PageHead } from '../components/ui'
 import { fmtDate, nameParts } from '../utils'
+import { confirmBox } from '../confirm'
 
 const BLANK = {
   first_name: '', middle_name: '', last_name: '', phone: '', license_plate: '', dl_number: '', car: '', address: '', city: '', state: '', zip_code: '',
@@ -25,7 +26,7 @@ export default function Dnr() {
   useEffect(() => { const t = setTimeout(load, 250); return () => clearTimeout(t) }, [load])
 
   async function remove(g) {
-    if (!window.confirm(`Remove ${g.name} from the Do Not Rent list?`)) return
+    if (!(await confirmBox({ title: 'Remove from DNR list?', message: `${g.name} can be rented to again.`, tone: 'primary', confirmText: 'Remove' }))) return
     try {
       await api.patch(`/guests/${g.id}/`, { do_not_rent: false })
       setMsg(`${g.name} removed from the DNR list.`)
@@ -110,7 +111,7 @@ function DnrForm({ initial, onClose, onSaved }) {
   async function save(e) {
     e.preventDefault()
     if (!f.phone.trim() && !f.license_plate.trim() && !(f.dl_number || '').trim()) {
-      if (!window.confirm('No phone, plate or DL number entered. The guest can then only be matched by exact name. Save anyway?')) return
+      if (!(await confirmBox({ title: 'Save without phone, plate or DL?', message: 'The guest can then only be matched by exact name.', tone: 'primary', confirmText: 'Save anyway' }))) return
     }
     setBusy(true)
     setErr('')

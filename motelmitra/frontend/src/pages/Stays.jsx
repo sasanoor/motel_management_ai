@@ -8,7 +8,7 @@ import { Alert, PageHead, Pagination, PaymentModal } from '../components/ui'
 export default function Stays({ balancesOnly = false }) {
   const [q, setQ] = useState('')
   const [date, setDate] = useState('')
-  const [status, setStatus] = useState('')
+  const [cols, setCols] = useState({})     // grid filter row: room, name, phone, dates, days, balance, status
   const [data, setData] = useState(null)        // one page: { count, page, pages, results, owed }
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(25)
@@ -19,10 +19,10 @@ export default function Stays({ balancesOnly = false }) {
     const params = { page, page_size: pageSize }
     if (q) params.q = q
     if (date) params.date = date
-    if (status) params.status = status
-    if (balancesOnly) params.has_balance = 1
+    Object.entries(cols).forEach(([k, v]) => { if (v) params[k] = v })
+    if (balancesOnly) { params.has_balance = 1; delete params.balance }
     api.get('/stays/', { params }).then((r) => { setData(r.data); setErr('') }).catch((e) => setErr(errorText(e)))
-  }, [q, date, status, balancesOnly, page, pageSize])
+  }, [q, date, cols, balancesOnly, page, pageSize])
 
   // a new search or filter starts again at page 1
   const filter = (setter) => (v) => { setter(v); setPage(1) }
@@ -48,18 +48,15 @@ export default function Stays({ balancesOnly = false }) {
         <label className="inline">Staying on
           <input type="date" value={date} onChange={(e) => filter(setDate)(e.target.value)} />
         </label>
-        {!balancesOnly && (
-          <select value={status} onChange={(e) => filter(setStatus)(e.target.value)}>
-            <option value="">All statuses</option>
-            <option value="CHECKED_IN">In house</option>
-            <option value="CHECKED_OUT">Checked out</option>
-          </select>
-        )}
-        {(q || date || status) && <button className="btn" onClick={() => { setQ(''); setDate(''); setStatus(''); setPage(1) }}>Clear</button>}
+        {(q || date || Object.values(cols).some(Boolean)) && <button className="btn" onClick={() => { setQ(''); setDate(''); setCols({}); setPage(1) }}>Clear</button>}
       </div>
       <Alert>{err}</Alert>
       <div className="card no-pad">
-        {rows && <StaysTable stays={rows} actions={{ onPay: setPaying }} empty={balancesOnly ? 'No open balances. 🎉' : 'No guests found.'} />}
+        {rows && (
+          <StaysTable stays={rows} actions={{ onPay: setPaying }} empty={balancesOnly ? 'No open balances. 🎉' : 'No guests found.'}
+            filters={cols} gridKey={balancesOnly ? 'balances' : 'stays'} noFilter={balancesOnly ? ['balance'] : []}
+            onFilter={(k, v) => { setCols((o) => (k === null ? {} : { ...o, [k]: v })); setPage(1) }} />
+        )}
         {data && (
           <Pagination page={data.page} pages={data.pages} count={data.count} pageSize={pageSize}
             onPage={(n) => { setPage(n); window.scrollTo({ top: 0, behavior: 'smooth' }) }}

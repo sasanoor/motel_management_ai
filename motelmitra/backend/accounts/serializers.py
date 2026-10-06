@@ -100,6 +100,16 @@ class ClientOnboardSerializer(ClientSerializer):
 
 
 class LoginSerializer(TokenObtainPairSerializer):
+    @classmethod
+    def get_token(cls, user):
+        # new login: new session key, so the user's older login (another PC / phone) is signed out
+        import uuid
+        user.session_key = uuid.uuid4().hex
+        user.save(update_fields=["session_key"])
+        token = super().get_token(user)
+        token["sid"] = user.session_key
+        return token
+
     def validate(self, attrs):
         data = super().validate(attrs)
         user = self.user

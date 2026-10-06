@@ -39,6 +39,14 @@ if not defined WIFI (
   set "WIFI=yes"
 )
 set "WIFI=%WIFI: =%"
+REM ---------- grid scroll buttons: GRID_SCROLL_BUTTONS=yes / no in backend\.env (add it if missing, so it is easy to find)
+set "GSB="
+if exist "%ROOT%backend\.env" for /f "usebackq eol=# tokens=1,* delims==" %%a in ("%ROOT%backend\.env") do if /i "%%a"=="GRID_SCROLL_BUTTONS" set "GSB=%%b"
+if not defined GSB (
+  >> "%ROOT%backend\.env" echo.
+  >> "%ROOT%backend\.env" echo # yes = show ^< ^> scroll buttons on wide grids ^(hover the grid^). no = hide them
+  >> "%ROOT%backend\.env" echo GRID_SCROLL_BUTTONS=yes
+)
 set "LAN=1"
 if /i "%WIFI%"=="no" set "LAN=0"
 if /i "%WIFI%"=="n" set "LAN=0"

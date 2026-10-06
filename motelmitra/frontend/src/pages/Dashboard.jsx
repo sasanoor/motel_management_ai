@@ -58,6 +58,14 @@ export default function Dashboard() {
         </div>
       )}
 
+      {data && (st.open_problems > 0 || st.out_of_order > 0 || st.dirty > 0) && (
+        <div className="hk-banner">
+          {st.dirty > 0 && <Link to="/housekeeping">🧹 {st.dirty} room{st.dirty === 1 ? '' : 's'} not cleaned yet</Link>}
+          {st.out_of_order > 0 && <Link to="/housekeeping">⛔ {st.out_of_order} out of order</Link>}
+          {st.open_problems > 0 && <Link to="/problems">⚠ {st.open_problems} open room problem{st.open_problems === 1 ? '' : 's'}</Link>}
+        </div>
+      )}
+
       <div className="tabs">
         <button className={tab === 'checkouts' ? 'on' : ''} onClick={() => setTab('checkouts')}>
           Checkouts {data && <span className="count">{data.checkouts.length}</span>}
@@ -84,6 +92,8 @@ export default function Dashboard() {
           <StaysTable
             stays={tab === 'checkouts' ? data.checkouts : data.staying}
             highlightDate={date}
+            key={tab}
+            gridKey="home"
             actions={{ onPay: setPaying, onCheckout: checkout }}
             empty={tab === 'checkouts' ? 'No checkouts on this date.' : 'No guests on this date.'}
           />

@@ -13,3 +13,4 @@ frontend/dist/
 # app logs
 logs/
 app_links.txt
+backend/.secret_key

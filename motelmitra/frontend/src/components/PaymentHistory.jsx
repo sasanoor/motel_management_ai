@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import api, { errorText } from '../api'
-import { fmtDate, fmtDateTime, money, num, rateTypeInfo } from '../utils'
+import { fmtDate, fmtDateTime, money, num, rateTypeInfo, csvCell } from '../utils'
 import { Alert, BalanceCell, Empty, Stat } from './ui'
 
 /**
@@ -54,7 +54,7 @@ export default function PaymentHistory({ isSuper, client, onCSV }) {
   }
 
   function exportCSV(d) {
-    const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`
+    const esc = csvCell
     const head = ['Guest', 'Phone', 'Room', 'Check-in', 'Checkout', 'Stay total', 'Business day', 'Taken at', 'Type', 'Method', 'Amount', 'Clerk', 'Notes', 'Balance now']
     const lines = [head.map(esc).join(',')]
     d.rows.forEach((s) => (s.payments.length ? s.payments : [{}]).forEach((p) => lines.push([
