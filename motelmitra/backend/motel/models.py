@@ -272,7 +272,8 @@ class Stay(models.Model):
 class Payment(models.Model):
     CASH = "CASH"
     CREDIT = "CREDIT"
-    METHOD_CHOICES = [(CASH, "Cash"), (CREDIT, "Credit")]
+    CHECK = "CHECK"
+    METHOD_CHOICES = [(CASH, "Cash"), (CREDIT, "Credit"), (CHECK, "Check")]
 
     stay = models.ForeignKey(Stay, on_delete=models.CASCADE, related_name="payments")
     amount = models.DecimalField(max_digits=10, decimal_places=2)
@@ -284,7 +285,9 @@ class Payment(models.Model):
     is_initial = models.BooleanField(default=False, help_text="Collected at check-in")
     PAYMENT = "PAYMENT"
     REFUND = "REFUND"
-    kind = models.CharField(max_length=10, choices=[(PAYMENT, "Payment"), (REFUND, "Refund")], default=PAYMENT)
+    STAYOVER = "STAYOVER"   # taken with "+ Stay" (guest stays longer and pays ahead)
+    kind = models.CharField(max_length=10, choices=[(PAYMENT, "Payment"), (REFUND, "Refund"), (STAYOVER, "Stay-over payment")],
+                            default=PAYMENT)
     notes = models.CharField(max_length=255, blank=True)
     # The business day the money was received on (reports and the room sheet count it on this day)
     business_date = models.DateField(null=True, blank=True, db_index=True)
@@ -345,10 +348,11 @@ class Expense(models.Model):
 
     CASH = "CASH"
     CREDIT = "CREDIT"
+    CHECK = "CHECK"
     client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="expenses")
     business_date = models.DateField(db_index=True)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
-    method = models.CharField(max_length=10, choices=[(CASH, "Cash"), (CREDIT, "Card")], default=CASH)
+    method = models.CharField(max_length=10, choices=[(CASH, "Cash"), (CREDIT, "Card"), (CHECK, "Check")], default=CASH)
     description = models.CharField(max_length=255)
     clerk = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="expenses")
     created_at = models.DateTimeField(auto_now_add=True)

@@ -5,10 +5,12 @@ import { useAuth } from '../auth'
 import { fmtDay, ROLES, setBusinessDate, setWifiHosted } from '../utils'
 import { APP_VERSION } from '../version'
 import GridScroller from './GridScroller'
+import { PlanExpiredScreen, PlanWarning } from '../pages/Plans'
 
 const NAV = {
   SUPER_ADMIN: [
     { to: '/clients', label: 'Clients', icon: '🏨' },
+    { to: '/plans', label: 'Plans', icon: '💳' },
     { to: '/reports', label: 'Reports', icon: '📊' },
   ],
   CLIENT_ADMIN: [
@@ -29,6 +31,7 @@ const NAV = {
     { to: '/charges', label: 'Charges & Fees', icon: '💳' },
     { to: '/users', label: 'Users', icon: '👥' },
     { to: '/deleted', label: 'Deleted Guests', icon: '🗑️' },
+    { to: '/plan', label: 'My Plan', icon: '📅' },
   ],
   MAINTENANCE: [
     { to: '/', label: 'Housekeeping', icon: '🧹', end: true },
@@ -54,7 +57,31 @@ export default function Layout() {
   const { user, logout } = useAuth()
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
-  const items = NAV[user.role] || []
+  // MotelMitra plan: warning popup in the last days, "plan ended" screen for the admin after the end date
+  const [plan, setPlan] = useState(null)
+  const [planWarn, setPlanWarn] = useState(false)
+  const loadPlan = useCallback(() => {
+    if (user.role === 'SUPER_ADMIN') return
+    api.get('/subscription/').then((r) => {
+      const p = r.data.plan
+      setPlan(p)
+      let seen = false
+      try { seen = sessionStorage.getItem('mm.planwarn') === String(p.paid_until) } catch { /* ignore */ }
+      if (p.status === 'expiring' && !seen) setPlanWarn(true)
+    }).catch(() => {})
+  }, [user.role])
+  useEffect(() => {
+    loadPlan()
+    const t = setInterval(loadPlan, 10 * 60000)
+    window.addEventListener('mm-plan-expired', loadPlan)
+    return () => { clearInterval(t); window.removeEventListener('mm-plan-expired', loadPlan) }
+  }, [loadPlan])
+  const planEnded = plan?.status === 'expired'
+  const closeWarn = () => {
+    try { sessionStorage.setItem('mm.planwarn', String(plan.paid_until)) } catch { /* ignore */ }
+    setPlanWarn(false)
+  }
+  const items = planEnded ? [] : (NAV[user.role] || [])
   const usesDay = user.role !== 'SUPER_ADMIN'
 
   // Business day: pages use it as "today". Loaded before any page shows.
@@ -169,7 +196,9 @@ export default function Layout() {
             </div>
           )}
           {gridButtons && <GridScroller />}
-          {usesDay && !biz ? <div className="muted">Loading…</div> : <Outlet key={biz || 'x'} context={{ biz, applyBiz, loadBiz }} />}
+          {planEnded ? <PlanExpiredScreen plan={plan} />
+            : usesDay && !biz ? <div className="muted">Loading…</div> : <Outlet key={biz || 'x'} context={{ biz, applyBiz, loadBiz }} />}
+          {planWarn && plan && <PlanWarning plan={plan} isAdmin={user.role === 'CLIENT_ADMIN'} onClose={closeWarn} />}
         </main>
       </div>
       {open && <div className="scrim" onClick={() => setOpen(false)} />}

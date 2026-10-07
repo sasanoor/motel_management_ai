@@ -16,6 +16,7 @@ import TodayReport from './pages/TodayReport'
 import NightAudit from './pages/NightAudit'
 import PhoneUpload from './pages/PhoneUpload'
 import Stays from './pages/Stays'
+import { MyPlan, Plans } from './pages/Plans'
 
 function Guard({ allow, children }) {
   const { user } = useAuth()
@@ -64,6 +65,8 @@ export default function App() {
         <Route path="users" element={<Guard allow={ADMIN}><Users /></Guard>} />
         <Route path="deleted" element={<Guard allow={ADMIN}><Deleted /></Guard>} />
         <Route path="clients" element={<Guard allow={SUPER}><Clients /></Guard>} />
+        <Route path="plans" element={<Guard allow={SUPER}><Plans /></Guard>} />
+        <Route path="plan" element={<Guard allow={ADMIN}><MyPlan /></Guard>} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

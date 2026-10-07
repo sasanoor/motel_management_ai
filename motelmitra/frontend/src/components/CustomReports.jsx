@@ -35,15 +35,15 @@ const RANGES = [
 
 // Ready-made reports: one click, then change anything and save under your own name.
 const TEMPLATES = [
-  { name: 'Revenue by room type', range: 'month', config: { source: 'stays', columns: ['room_type', 'nights', 'total', 'cash', 'credit', 'balance'], group_by: 'room_type', sort: 'total', sort_dir: 'desc' } },
-  { name: 'Revenue by month', range: 'year', config: { source: 'stays', columns: ['check_in', 'nights', 'total', 'cash', 'credit', 'balance'], group_by: 'check_in', group_bucket: 'month', sort: 'check_in' } },
-  { name: 'Cash vs card by day', range: '7', config: { source: 'payments', columns: ['date', 'cash', 'credit', 'amount'], group_by: 'date', group_bucket: 'day', sort: 'date' } },
-  { name: 'Collections by clerk', range: '7', config: { source: 'payments', columns: ['clerk', 'cash', 'credit', 'amount'], group_by: 'clerk', sort: 'amount', sort_dir: 'desc' } },
+  { name: 'Revenue by room type', range: 'month', config: { source: 'stays', columns: ['room_type', 'nights', 'total', 'cash', 'credit', 'check', 'balance'], group_by: 'room_type', sort: 'total', sort_dir: 'desc' } },
+  { name: 'Revenue by month', range: 'year', config: { source: 'stays', columns: ['check_in', 'nights', 'total', 'cash', 'credit', 'check', 'balance'], group_by: 'check_in', group_bucket: 'month', sort: 'check_in' } },
+  { name: 'Cash vs card vs check by day', range: '7', config: { source: 'payments', columns: ['date', 'cash', 'credit', 'check', 'amount'], group_by: 'date', group_bucket: 'day', sort: 'date' } },
+  { name: 'Collections by clerk', range: '7', config: { source: 'payments', columns: ['clerk', 'cash', 'credit', 'check', 'amount'], group_by: 'clerk', sort: 'amount', sort_dir: 'desc' } },
   { name: 'Guests owing money', range: '90', config: { source: 'stays', columns: ['room', 'guest', 'phone', 'check_in', 'check_out', 'total', 'paid', 'balance'], filters: [{ field: 'balance', op: 'gt', value: '0' }], sort: 'balance', sort_dir: 'desc' } },
   { name: 'Repeat guests', range: 'year', config: { source: 'guests', columns: ['guest', 'phone', 'stays', 'nights', 'last_stay', 'total', 'balance'], filters: [{ field: 'stays', op: 'gte', value: '2' }], sort: 'stays', sort_dir: 'desc' } },
   { name: 'Weekly and monthly guests', range: '90', config: { source: 'stays', columns: ['room', 'guest', 'rate_type', 'check_in', 'check_out', 'total', 'balance', 'status'], filters: [{ field: 'rate_type', op: 'not', value: 'Daily' }], sort: 'check_in', sort_dir: 'desc' } },
   { name: 'Refunds given', range: '30', config: { source: 'payments', columns: ['date', 'time', 'guest', 'room', 'method', 'amount', 'clerk', 'notes'], filters: [{ field: 'type', op: 'is', value: 'Refund' }], sort: 'date', sort_dir: 'desc' } },
-  { name: 'Expenses by month', range: 'year', config: { source: 'expenses', columns: ['date', 'cash', 'credit', 'amount'], group_by: 'date', group_bucket: 'month', sort: 'date' } },
+  { name: 'Expenses by month', range: 'year', config: { source: 'expenses', columns: ['date', 'cash', 'credit', 'check', 'amount'], group_by: 'date', group_bucket: 'month', sort: 'date' } },
   { name: 'Busiest weekdays', range: '90', config: { source: 'stays', columns: ['check_in', 'nights', 'total'], group_by: 'check_in', group_bucket: 'weekday', sort: '_count', sort_dir: 'desc' } },
   { name: 'Problems by room', range: '90', config: { source: 'problems', columns: ['room', 'days_open'], group_by: 'room', sort: '_count', sort_dir: 'desc' } },
   { name: 'Problems by type', range: '90', config: { source: 'problems', columns: ['category', 'days_open'], group_by: 'category', sort: '_count', sort_dir: 'desc' } },

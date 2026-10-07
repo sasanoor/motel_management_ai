@@ -236,11 +236,13 @@ td.dnr-reason { max-width: 260px; }
 .btn:hover { background: #f4f7fb; }
 .btn:disabled { opacity: .55; cursor: not-allowed; }
 .btn-primary { background: var(--primary); border-color: var(--primary); color: #fff; }
-.btn-primary:hover { background: var(--primary-dark); }
+.btn-primary:hover { background: var(--primary-dark); color: #fff; }
 .btn-warn { background: var(--amber); border-color: var(--amber); color: #3b2a00; font-weight: 600; }
-.btn-warn:hover { background: #e3a42d; }
+.btn-warn:hover { background: #e3a42d; color: #3b2a00; }
 .btn-danger { background: var(--red); border-color: var(--red); color: #fff; }
+.btn-danger:hover { background: #a8231b; border-color: #a8231b; color: #fff; }
 .btn-danger-outline { color: var(--red); border-color: #f0c2bf; }
+.btn-danger-outline:hover { background: var(--red-bg); color: var(--red); }
 .btn-ghost-light { background: transparent; border-color: rgba(255,255,255,.3); color: #fff; }
 .btn-ghost-light:hover { background: var(--navy-2); }
 .btn-sm { padding: 4px 10px; font-size: 13px; }
@@ -396,6 +398,7 @@ input.input-owed { color: var(--red); font-weight: 700; }
 .sheet .sheet-day td { border-top: 1px solid var(--line); }
 .update-banner { margin-bottom: 16px; }
 .btn-add { border-color: var(--primary); color: var(--primary); }
+.btn-add:hover { background: #e8f0fc; color: var(--primary); }
 .add-stay-sum strong { color: var(--navy); }
 .app-ver { margin-top: 10px; font-size: 11px; opacity: .55; text-align: center; letter-spacing: .03em; }
 .login-ver { margin-top: 14px; text-align: center; font-size: 12px; color: var(--muted); }
@@ -696,3 +699,30 @@ input.input-owed { color: var(--red); font-weight: 700; }
 .hk-card.DUEOUT { border-left-color: var(--amber); background: #fffcf4; }
 .renew-banner .carry-row .seg { min-width: 280px; }
 .renew-banner .carry-row .seg button { white-space: nowrap; }
+
+/* ---------- subscription plans ---------- */
+.plan-card .plan-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.plan-name { font-size: 22px; font-weight: 800; color: var(--navy); }
+.plan-facts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 14px; }
+.plan-facts div { background: #f6f8fb; border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 2px; }
+.plan-facts span { font-size: 12px; color: var(--muted); }
+.plan-facts strong { font-size: 17px; }
+.plan-card.plan-expiring { border-left: 5px solid var(--amber); }
+.plan-card.plan-expired { border-left: 5px solid var(--red); }
+.plan-card.plan-active { border-left: 5px solid var(--green); }
+.plan-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+.plan-offer { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.plan-offer.off { opacity: .6; }
+.plan-price { font-size: 30px; font-weight: 800; color: var(--primary); }
+.sub-form h3 { margin: 0 0 12px; }
+.plan-warn { display: flex; gap: 14px; align-items: flex-start; }
+.plan-warn p { margin: 0 0 8px; }
+.plan-warn-icon { font-size: 34px; line-height: 1; }
+.plan-expired { max-width: 560px; margin: 40px auto; text-align: center; padding: 34px 28px; border-top: 5px solid var(--red); }
+.plan-expired h1 { margin: 8px 0 12px; }
+.plan-expired-icon { font-size: 46px; }
+@media (max-width: 700px) { .plan-facts { grid-template-columns: 1fr 1fr; } }
+.clerk-line { flex-direction: row; align-items: baseline; gap: 10px; }
+.clerk-line strong { font-size: 15px; padding: 0; }
+.pill.pay-check { background: #f1e9fb; color: #6a3fa0; }
+.amt-check { color: #6a3fa0; }

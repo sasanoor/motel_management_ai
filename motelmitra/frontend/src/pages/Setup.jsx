@@ -4,6 +4,7 @@ import { useAuth } from '../auth'
 import { Alert, Empty, Modal, PageHead } from '../components/ui'
 import { ROLES, fmtDate, money, num } from '../utils'
 import { confirmBox } from '../confirm'
+import { PlanPill, SubscriptionModal } from './Plans'
 
 /* ------------------------------------------------------------------ shared */
 function useList(url) {
@@ -289,7 +290,7 @@ export function Directory() {
     const ok = await confirmBox({
       title: 'Delete guest?',
       message: 'The guest is hidden from the directory, check-in lookups and the DNR check. Their stays and payments stay in all reports. Only an admin can recover.',
-      details: [['Guest', g.name], ['Phone', g.phone || '-'], ['Stays', String(g.stay_count)], ['Paid', `${money(num(g.cash_paid) + num(g.card_paid))}`], ['Balance', money(g.balance)]],
+      details: [['Guest', g.name], ['Phone', g.phone || '-'], ['Stays', String(g.stay_count)], ['Paid', `${money(num(g.cash_paid) + num(g.card_paid) + num(g.check_paid))}`], ['Balance', money(g.balance)]],
     })
     if (!ok) return
     try { await api.delete(`/guests/${g.id}/`); setMsg(`${g.name} deleted. The admin can recover it from Deleted Guests.`); setErr(''); load() } catch (e) { setErr(errorText(e)) }
@@ -311,7 +312,7 @@ export function Directory() {
             <table className="table dir-grid">
               <thead><tr>
                 <th>Name</th><th>Phone</th><th>Plate</th><th>City</th><th className="num">Stays</th><th>Last stay</th>
-                <th className="num">Cash</th><th className="num">Card</th><th className="num">Balance</th><th></th>
+                <th className="num">Cash</th><th className="num">Card</th><th className="num">Check</th><th className="num">Balance</th><th></th>
               </tr></thead>
               <tbody>
                 {rows.map((g) => (
@@ -327,6 +328,7 @@ export function Directory() {
                     <td>{fmtDate(g.last_stay)}</td>
                     <td className="num amt-cash">{num(g.cash_paid) ? money(g.cash_paid) : <span className="muted">—</span>}</td>
                     <td className="num amt-credit">{num(g.card_paid) ? money(g.card_paid) : <span className="muted">—</span>}</td>
+                    <td className="num amt-check">{num(g.check_paid) ? money(g.check_paid) : <span className="muted">—</span>}</td>
                     <td className="num"><span className={num(g.balance) > 0 ? 'owed' : num(g.balance) < 0 ? 'amt-credit' : ''}>{money(g.balance)}</span></td>
                     <td className="row-actions">
                       <button className="btn btn-sm" title={g.do_not_rent ? 'Remove the Do Not Rent flag' : 'Flag as Do Not Rent'} onClick={() => toggle(g)}>{g.do_not_rent ? 'Clear DNR' : 'Flag DNR'}</button>
@@ -340,6 +342,7 @@ export function Directory() {
                   <td colSpan={6}>{rows.length} guest{rows.length === 1 ? '' : 's'}{rows.length >= 200 ? ' (first 200, search to narrow)' : ''}</td>
                   <td className="num amt-cash">{money(sum('cash_paid'))}</td>
                   <td className="num amt-credit">{money(sum('card_paid'))}</td>
+                  <td className="num amt-check">{money(sum('check_paid'))}</td>
                   <td className="num"><span className={sum('balance') > 0 ? 'owed' : ''}>{money(sum('balance'))}</span></td>
                   <td></td>
                 </tr>
@@ -357,6 +360,7 @@ export function Clients() {
   const { rows, err, setErr, load } = useList('/clients/')
   const [edit, setEdit] = useState(null)
   const [viewUsers, setViewUsers] = useState(null)
+  const [planOf, setPlanOf] = useState(null)
 
   const base = [
     { name: 'name', label: 'Motel name', required: true, wide: true },
@@ -400,7 +404,7 @@ export function Clients() {
         {rows?.length > 0 && (
           <div className="table-wrap">
             <table className="table">
-              <thead><tr><th>Motel</th><th>Location</th><th>Phone</th><th className="num">Rooms</th><th className="num">Users</th><th>Since</th><th>Status</th><th></th></tr></thead>
+              <thead><tr><th>Motel</th><th>Location</th><th>Phone</th><th className="num">Rooms</th><th className="num">Users</th><th>Since</th><th>Plan</th><th>Status</th><th></th></tr></thead>
               <tbody>
                 {rows.map((c) => (
                   <tr key={c.id}>
@@ -410,8 +414,13 @@ export function Clients() {
                     <td className="num">{c.room_count}</td>
                     <td className="num">{c.user_count}</td>
                     <td>{fmtDate(c.created_at)}</td>
+                    <td>
+                      <PlanPill plan={c.plan} />
+                      {c.plan?.plan_name && <div className="tiny muted">{c.plan.plan_name} · to {fmtDate(c.plan.paid_until)}</div>}
+                    </td>
                     <td><Active on={c.is_active} /></td>
                     <td className="row-actions">
+                      <button className="btn btn-sm btn-primary" onClick={() => setPlanOf(c)}>Plan</button>
                       <button className="btn btn-sm" onClick={() => showUsers(c)}>Users</button>
                       <button className="btn btn-sm" onClick={() => setEdit(c)}>Edit</button>
                       <button className="btn btn-sm" onClick={() => toggle(c)}>{c.is_active ? 'Deactivate' : 'Activate'}</button>
@@ -429,6 +438,7 @@ export function Clients() {
           fields={edit.id ? base : [...base, ...adminFields]}
         />
       )}
+      {planOf && <SubscriptionModal client={planOf} onClose={() => setPlanOf(null)} onChanged={load} />}
       {viewUsers && (
         <Modal title={`${viewUsers.client.name}: users`} onClose={() => setViewUsers(null)} width={640}>
           <table className="table">

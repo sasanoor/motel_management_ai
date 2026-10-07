@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import api, { errorText } from '../api'
 import { addDays, addMonths, daysBetween, fmtDate, money, num, RATE_TYPES } from '../utils'
 import usePayment from '../usePayment'
@@ -31,11 +31,22 @@ export default function AddStayModal({ stay, onClose, onSaved }) {
     : type === 'MONTHLY' ? addMonths(stay.check_out_date, count) : addDays(stay.check_out_date, count)
   const addedNights = daysBetween(stay.check_out_date, newOut)
   const roomAdd = r2(num(rate) * count)
-  const extraAdd = num(stay.extra_person_fee) && stay.num_days
+  // Extra charges for the added stay, same boxes as check-in. Extra person fee is automatic
+  // (same nightly amount as the stay) until the clerk types one.
+  const [fees, setFees] = useState(null)
+  useEffect(() => { api.get('/settings/').then((r) => setFees(r.data)).catch(() => {}) }, [])
+  const [pets, setPets] = useState(String(stay.pets || 0))
+  const [petFee, setPetFee] = useState('0')
+  const [xpFee, setXpFee] = useState(null)        // null = automatic
+  const [lateFee, setLateFee] = useState('0')
+  const [earlyFee, setEarlyFee] = useState('0')
+  const autoXp = num(stay.extra_person_fee) && stay.num_days
     ? r2((num(stay.extra_person_fee) / stay.num_days) * addedNights) : 0
-  // owed after adding the nights, before today's payment (same payment box as check-in)
-  const p = usePayment(r2(num(stay.total_amount) + roomAdd + extraAdd - num(stay.amount_paid)))
-  const newTotal = r2(num(stay.total_amount) + roomAdd + extraAdd + p.cardFee + p.adj)
+  const extraAdd = xpFee == null ? autoXp : num(xpFee)
+  const extras = r2(num(petFee) + extraAdd + num(lateFee) + num(earlyFee))
+  // owed after adding the nights and charges, before today's payment (same payment box as check-in)
+  const p = usePayment(r2(num(stay.total_amount) + roomAdd + extras - num(stay.amount_paid)))
+  const newTotal = r2(num(stay.total_amount) + roomAdd + extras + p.cardFee + p.adj)
 
   async function save(e, allowOverlap = false) {
     e?.preventDefault()
@@ -43,6 +54,8 @@ export default function AddStayModal({ stay, onClose, onSaved }) {
     try {
       const { data } = await api.post(`/stays/${stay.id}/extend/`, {
         periods: count, rate_type: type, rate, ...p.body(), notes, allow_overlap: allowOverlap,
+        pets: num(pets), pet_fee_add: num(petFee).toFixed(2), late_fee_add: num(lateFee).toFixed(2),
+        early_checkin_fee_add: num(earlyFee).toFixed(2), extra_person_fee_add: xpFee == null ? '' : num(xpFee).toFixed(2),
       })
       onSaved(data)
     } catch (e2) {
@@ -87,15 +100,49 @@ export default function AddStayModal({ stay, onClose, onSaved }) {
           </div>
           <div className="readout">
             <span>Room charge added</span>
-            <strong>{money(roomAdd + extraAdd)}</strong>
-            <span className="tiny muted">{count} × {money(rate)}{extraAdd > 0 && ` + extra person ${money(extraAdd)}`}</span>
+            <strong>{money(roomAdd)}</strong>
+            <span className="tiny muted">{count} × {money(rate)}</span>
           </div>
           <div className="readout total-readout">
             <span>New total</span>
             <strong>{money(newTotal)}</strong>
           </div>
         </div>
-        <PaymentCollected p={p} totalNote={<><span>Owed after adding</span><strong>{money(r2(num(stay.total_amount) + roomAdd + extraAdd - num(stay.amount_paid)))}</strong></>} />
+        <PaymentCollected p={p} extraTotal={extras}
+          totalNote={<><span>Owed after adding</span><strong>{money(p.owedNow)}</strong></>}
+          extraFields={<>
+            <label>Pets
+              <input type="number" min="0" value={pets} onChange={(e) => setPets(e.target.value)} />
+              <span className="hint">{money(fees?.pet_fee)} per pet</span>
+            </label>
+            <label>Pet fee
+              <input type="number" min="0" step="0.01" value={petFee} onChange={(e) => setPetFee(e.target.value)} />
+              {num(fees?.pet_fee) > 0 && num(pets) > 0 && (
+                <button type="button" className="link-btn" onClick={() => setPetFee(r2(num(pets) * num(fees.pet_fee)).toFixed(2))}>
+                  Apply {num(pets)} × {money(fees.pet_fee)}
+                </button>
+              )}
+            </label>
+            <label>Extra persons
+              <input type="number" value={stay.extra_persons || 0} disabled />
+              <span className="hint">From the check-in</span>
+            </label>
+            <label>Extra person fee
+              <span className="fee-input">
+                <input type="number" min="0" step="0.01" value={xpFee ?? autoXp.toFixed(2)} onChange={(e) => setXpFee(e.target.value)} />
+                {xpFee != null && <button type="button" className="fee-reset" title="Back to auto" onClick={() => setXpFee(null)}>↺</button>}
+              </span>
+              <span className="hint">{autoXp > 0 ? `Same per night as the stay, ${addedNights} more night${addedNights === 1 ? '' : 's'}` : 'No extra persons on this stay'}</span>
+            </label>
+            <label>Late fee
+              <input type="number" min="0" step="0.01" value={lateFee} onChange={(e) => setLateFee(e.target.value)} />
+              {num(fees?.late_fee) > 0 && <button type="button" className="link-btn" onClick={() => setLateFee(num(fees.late_fee).toFixed(2))}>Apply late fee {money(fees.late_fee)}</button>}
+            </label>
+            <label>Early check-in fee
+              <input type="number" min="0" step="0.01" value={earlyFee} onChange={(e) => setEarlyFee(e.target.value)} />
+              {num(fees?.early_checkin_fee) > 0 && <button type="button" className="link-btn" onClick={() => setEarlyFee(num(fees.early_checkin_fee).toFixed(2))}>Apply early check-in fee {money(fees.early_checkin_fee)}</button>}
+            </label>
+          </>} />
         <div className="form-grid cols-4">
           <label className="span-4">Notes
             <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional" />

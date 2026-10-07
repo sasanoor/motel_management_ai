@@ -29,6 +29,16 @@ export function takeSignOutReason() {
 }
 function signedOutElsewhere(error) {
   const d = error?.response?.data
+  if (error?.response?.status === 403 && d?.code === 'plan_expired') {
+    // plan ended while the screen was open: the admin sees the "plan ended" screen, everyone else is signed out
+    let role = ''
+    try { role = JSON.parse(localStorage.getItem('mm_user') || '{}').role } catch { /* ignore */ }
+    if (role === 'CLIENT_ADMIN') { window.dispatchEvent(new Event('mm-plan-expired')); return false }
+    try { sessionStorage.setItem(KICKED, d.detail) } catch { /* ignore */ }
+    tokens.clear()
+    window.location.href = '/login'
+    return true
+  }
   if (error?.response?.status !== 401 || d?.code !== 'session_replaced') return false
   try { sessionStorage.setItem(KICKED, d.detail || 'You were signed out because this user logged in somewhere else.') } catch { /* ignore */ }
   tokens.clear()

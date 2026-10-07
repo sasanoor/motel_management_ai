@@ -173,6 +173,7 @@ export default function CheckoutModal({ stay, onClose, onDone }) {
                 <select value={refundMethod} onChange={(e) => setRefundMethod(e.target.value)}>
                   <option value="CASH">Cash</option>
                   <option value="CREDIT">Card</option>
+                  <option value="CHECK">Check</option>
                 </select>
               </label>
               <label>Note

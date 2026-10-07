@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import api, { errorText } from '../api'
-import { fmtDate, fmtDateTime, money, num, rateTypeInfo, csvCell } from '../utils'
+import { fmtDate, methodInfo, fmtDateTime, money, num, rateTypeInfo, csvCell } from '../utils'
 import { Alert, BalanceCell, Empty, Stat } from './ui'
 
 /**
@@ -59,7 +59,7 @@ export default function PaymentHistory({ isSuper, client, onCSV }) {
     const lines = [head.map(esc).join(',')]
     d.rows.forEach((s) => (s.payments.length ? s.payments : [{}]).forEach((p) => lines.push([
       s.guest.name, s.guest.phone, s.room_number, s.check_in_date, s.check_out_date, s.total,
-      p.business_date, p.paid_at, p.type, p.method, p.amount, p.clerk, p.notes, s.balance,
+      p.business_date, p.paid_at, p.type, p.method && methodInfo(p.method).label, p.amount, p.clerk, p.notes, s.balance,
     ].map(esc).join(','))))
     const a = document.createElement('a')
     a.href = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv' }))
@@ -103,6 +103,7 @@ export default function PaymentHistory({ isSuper, client, onCSV }) {
             <Stat label="Total charged" value={money(data.totals.total)} />
             <Stat label="Cash" value={money(data.totals.cash)} />
             <Stat label="Credit" value={money(data.totals.credit)} />
+            {Number(data.totals.check) !== 0 && <Stat label="Check" value={money(data.totals.check)} />}
             {num(data.totals.refunds) > 0 && <Stat label="Refunds (included)" value={money(data.totals.refunds)} tone="bad" />}
             <Stat label="Paid" value={money(data.totals.paid)} tone="good" />
             <Stat label="Balance" value={money(data.totals.balance)} tone={num(data.totals.balance) > 0 ? 'bad' : ''} />
@@ -141,7 +142,7 @@ export default function PaymentHistory({ isSuper, client, onCSV }) {
                           <td><strong>{fmtDate(p.business_date)}</strong></td>
                           <td className="tiny muted">{fmtDateTime(p.paid_at)}</td>
                           <td>{p.type}</td>
-                          <td>{p.method === 'CASH' ? 'Cash' : 'Credit'}</td>
+                          <td>{methodInfo(p.method).label}</td>
                           <td className="num">{money(p.amount)}</td>
                           <td>{p.clerk}</td>
                           <td>{p.notes}</td>
@@ -150,7 +151,7 @@ export default function PaymentHistory({ isSuper, client, onCSV }) {
                     </tbody>
                     <tfoot>
                       <tr>
-                        <td colSpan={4}>Paid (cash {money(s.cash)} · credit {money(s.credit)})</td>
+                        <td colSpan={4}>Paid (cash {money(s.cash)} · credit {money(s.credit)}{Number(s.check) ? ` · check ${money(s.check)}` : ''})</td>
                         <td className="num">{money(s.paid)}</td>
                         <td colSpan={2}>Balance <BalanceCell value={s.balance} /></td>
                       </tr>

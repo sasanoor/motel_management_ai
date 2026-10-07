@@ -78,7 +78,7 @@ class GuestSerializer(serializers.ModelSerializer):
             "id", "name", "first_name", "middle_name", "last_name", "address", "city", "state", "zip_code", "phone", "car",
             "license_plate", "dl_number", "do_not_rent", "dnr_reason", "dnr_marked_at", "dnr_marked_by_name",
             "stay_count", "last_stay", "created_at",
-            "cash_paid", "card_paid", "balance", "is_deleted", "deleted_at", "deleted_by_name",
+            "cash_paid", "card_paid", "check_paid", "balance", "is_deleted", "deleted_at", "deleted_by_name",
         ]
         read_only_fields = ["dnr_marked_at", "is_deleted", "deleted_at"]
 
@@ -86,6 +86,7 @@ class GuestSerializer(serializers.ModelSerializer):
     # in the database, other screens fall back to working them out here
     cash_paid = serializers.SerializerMethodField()
     card_paid = serializers.SerializerMethodField()
+    check_paid = serializers.SerializerMethodField()
     balance = serializers.SerializerMethodField()
     deleted_by_name = serializers.SerializerMethodField()
 
@@ -93,13 +94,14 @@ class GuestSerializer(serializers.ModelSerializer):
         if not hasattr(obj, "_money"):
             if hasattr(obj, "ann_cash"):
                 q = Decimal("0.01")
-                obj._money = tuple(Decimal(v or 0).quantize(q) for v in (obj.ann_cash, obj.ann_card, obj.ann_total))
+                obj._money = tuple(Decimal(v or 0).quantize(q) for v in (obj.ann_cash, obj.ann_card, obj.ann_total, obj.ann_check))
             else:
                 pays = Payment.objects.filter(stay__guest=obj, stay__is_deleted=False)
                 cash = sum((p.amount for p in pays if p.method == Payment.CASH), ZERO)
                 card = sum((p.amount for p in pays if p.method == Payment.CREDIT), ZERO)
+                chk = sum((p.amount for p in pays if p.method == Payment.CHECK), ZERO)
                 total = sum((s.total_amount for s in obj.stays.filter(is_deleted=False)), ZERO)
-                obj._money = (cash, card, total)
+                obj._money = (cash, card, total, chk)
         return obj._money
 
     def get_cash_paid(self, obj):
@@ -108,9 +110,12 @@ class GuestSerializer(serializers.ModelSerializer):
     def get_card_paid(self, obj):
         return str(self._money(obj)[1])
 
+    def get_check_paid(self, obj):
+        return str(self._money(obj)[3])
+
     def get_balance(self, obj):
-        cash, card, total = self._money(obj)
-        return str(total - cash - card)
+        cash, card, total, chk = self._money(obj)
+        return str(total - cash - card - chk)
 
     def get_deleted_by_name(self, obj):
         u = obj.deleted_by
@@ -172,6 +177,7 @@ class StaySerializer(serializers.ModelSerializer):
     amount_paid = serializers.SerializerMethodField()
     cash_paid = serializers.SerializerMethodField()
     credit_paid = serializers.SerializerMethodField()
+    check_paid = serializers.SerializerMethodField()
     balance = serializers.SerializerMethodField()
     payments = PaymentSerializer(many=True, read_only=True)
     room_rates = serializers.SerializerMethodField()
@@ -184,7 +190,7 @@ class StaySerializer(serializers.ModelSerializer):
             "num_guests", "num_days", "rate_type", "periods", "rate", "room_charge", "adjustment",
             "pets", "pet_fee", "extra_persons", "extra_person_fee", "card_fee", "late_fee", "early_checkin_fee", "damage_fee",
             "charges_total", "total_amount", "early", "refunded",
-            "amount_paid", "cash_paid", "credit_paid", "balance",
+            "amount_paid", "cash_paid", "credit_paid", "check_paid", "balance",
             "clerk", "clerk_name", "comments", "status", "checked_out_at", "renewed_from", "renewed_to",
             "is_deleted", "deleted_at", "deleted_by_name", "payments", "created_at",
             "extra_stay_nights", "extra_stay_charge", "room_rates", "balance_carried",
@@ -239,6 +245,9 @@ class StaySerializer(serializers.ModelSerializer):
     def get_credit_paid(self, obj):
         return str(self._sum(obj, Payment.CREDIT))
 
+    def get_check_paid(self, obj):
+        return str(self._sum(obj, Payment.CHECK))
+
     def get_balance(self, obj):
         return str(obj.total_amount - self._sum(obj))
 
@@ -288,6 +297,7 @@ class StayWriteSerializer(serializers.ModelSerializer):
     # money collected at check-in
     cash = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, default=ZERO, write_only=True)
     credit = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, default=ZERO, write_only=True)
+    check = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, default=ZERO, write_only=True)
 
     rate = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)
     allow_overlap = serializers.BooleanField(required=False, default=False, write_only=True)
@@ -308,7 +318,7 @@ class StayWriteSerializer(serializers.ModelSerializer):
             "id", "room", "check_in_date", "check_in_time", "check_out_date", "check_out_time",
             "num_guests", "rate_type", "periods", "rate", "adjustment", "pets", "pet_fee", "extra_persons", "extra_person_fee", "card_fee",
             "late_fee", "early_checkin_fee", "comments", "photo_ids", "reuse_dl",
-            "guest_id", *GUEST_FIELDS, "cash", "credit", "allow_overlap", "renew_from", "room_status_ok",
+            "guest_id", *GUEST_FIELDS, "cash", "credit", "check", "allow_overlap", "renew_from", "room_status_ok",
             "carry_balance",
         ]
 
@@ -327,7 +337,7 @@ class StayWriteSerializer(serializers.ModelSerializer):
         room = attrs.get("room", inst.room if inst else None)
         if cin and cout and cout < cin:
             raise serializers.ValidationError({"check_out_date": "Checkout cannot be before check-in."})
-        if attrs.get("cash", ZERO) < 0 or attrs.get("credit", ZERO) < 0:
+        if attrs.get("cash", ZERO) < 0 or attrs.get("credit", ZERO) < 0 or attrs.get("check", ZERO) < 0:
             raise serializers.ValidationError("Payments cannot be negative.")
         guests = attrs.get("num_guests", inst.num_guests if inst else 1)
         if guests is not None and not (1 <= guests <= 50):
@@ -399,6 +409,7 @@ class StayWriteSerializer(serializers.ModelSerializer):
         reuse_dl = attrs.pop("reuse_dl", False)
         cash = attrs.pop("cash", ZERO) or ZERO
         credit = attrs.pop("credit", ZERO) or ZERO
+        check = attrs.pop("check", ZERO) or ZERO
         status_ok = attrs.pop("room_status_ok", False)
         carry = attrs.pop("carry_balance", False)
 
@@ -457,7 +468,7 @@ class StayWriteSerializer(serializers.ModelSerializer):
             old.checked_out_at = timezone.now()
             old.save()
         now = timezone.now()
-        for amount, method in ((cash, Payment.CASH), (credit, Payment.CREDIT)):
+        for amount, method in ((cash, Payment.CASH), (credit, Payment.CREDIT), (check, Payment.CHECK)):
             if amount > 0:
                 Payment.objects.create(
                     stay=stay, amount=amount, method=method, paid_at=now,
@@ -474,6 +485,7 @@ class StayWriteSerializer(serializers.ModelSerializer):
         attrs.pop("carry_balance", None)
         attrs.pop("cash", None)
         attrs.pop("credit", None)
+        attrs.pop("check", None)
         photo_ids = attrs.pop("photo_ids", None) or []
         attrs.pop("reuse_dl", None)
         guest_data = self._guest_data(attrs)

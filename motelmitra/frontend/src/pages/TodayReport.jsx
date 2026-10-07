@@ -7,7 +7,7 @@ import CheckoutModal from '../components/CheckoutModal'
 import ExpenseModal from '../components/ExpenseModal'
 import RoomSheet from '../components/RoomSheet'
 import { Alert, Empty, HkPill, PageHead, PaymentModal, Stat } from '../components/ui'
-import { addDays, fmtDate, fmtDateTime, fmtTime, money, num, periodText, todayISO, rateTypeInfo } from '../utils'
+import { addDays, methodInfo, fmtDate, fmtDateTime, fmtTime, money, num, periodText, todayISO, rateTypeInfo } from '../utils'
 import { confirmBox } from '../confirm'
 
 /** End-of-day / shift handover report for the front desk. */
@@ -46,7 +46,7 @@ export default function TodayReport() {
     const ok = await confirmBox({
       title: 'Delete expense?',
       message: "It will be removed from today's Cash drawer. The record is kept for the admin.",
-      details: [['Description', x.description], ['Paid by', x.method === 'CASH' ? 'Cash' : 'Card'], ['Amount', money(x.amount)], ['Clerk', x.clerk_name]],
+      details: [['Description', x.description], ['Paid by', methodInfo(x.method).card], ['Amount', money(x.amount)], ['Clerk', x.clerk_name]],
     })
     if (!ok) return
     try { await api.delete(`/expenses/${x.id}/`); reload() } catch (e) { setErr(errorText(e)) }
@@ -92,13 +92,15 @@ export default function TodayReport() {
             <Stat label="Cash in drawer" value={money(d.money.cash_in_drawer)} tone={num(d.money.cash_in_drawer) < 0 ? 'bad' : 'good'} />
             <Stat label="Cash collected" value={money(d.money.cash)} tone="good" />
             <Stat label="Credit collected" value={money(d.money.credit)} />
+            {num(d.money.check) !== 0 && <Stat label="Checks collected" value={money(d.money.check)} />}
             <Stat label="Total collected" value={money(d.money.collected)} tone="good" />
             {num(d.money.refunds) > 0 && <Stat label="Refunds given (included above)" value={money(d.money.refunds)} tone="bad" />}
             <Stat label="From today's check-ins" value={money(d.money.from_todays_checkins)} />
-            <Stat label="Balance payments (earlier stays)" value={money(d.money.from_earlier_stays)} />
+            <Stat label="Payments on earlier stays" value={money(d.money.from_earlier_stays)} />
             <Stat label="Unpaid from today's check-ins" value={money(d.money.unpaid_from_todays_checkins)} tone={num(d.money.unpaid_from_todays_checkins) > 0 ? 'bad' : ''} />
             <Stat label="Expenses (cash)" value={money(d.money.expenses_cash)} tone={num(d.money.expenses_cash) > 0 ? 'bad' : ''} />
             <Stat label="Expenses (card)" value={money(d.money.expenses_card)} />
+            {num(d.money.expenses_check) !== 0 && <Stat label="Expenses (check)" value={money(d.money.expenses_check)} />}
           </div>
           <p className="tiny muted drawer-note">Cash in drawer = cash collected {money(d.money.cash)} − cash expenses {money(d.money.expenses_cash)}</p>
 
@@ -112,7 +114,7 @@ export default function TodayReport() {
                       <tr key={x.id}>
                         <td>{fmtTime(new Date(x.created_at).toTimeString().slice(0, 5))}</td>
                         <td className="wrap">{x.description}</td>
-                        <td>{x.method === 'CASH' ? 'Cash' : 'Card'}</td>
+                        <td>{methodInfo(x.method).card}</td>
                         <td className="num">{money(x.amount)}</td>
                         <td>{x.clerk_name}</td>
                         <td className="row-actions no-print">
@@ -180,14 +182,14 @@ export default function TodayReport() {
               <h2 className="section-title">Collections by clerk</h2>
               <div className="card no-pad">
                 <table className="table">
-                  <thead><tr><th>Clerk</th><th className="num">Payments</th><th className="num">Cash</th><th className="num">Credit</th><th className="num">Total</th></tr></thead>
+                  <thead><tr><th>Clerk</th><th className="num">Payments</th><th className="num">Cash</th><th className="num">Credit</th><th className="num">Check</th><th className="num">Total</th></tr></thead>
                   <tbody>
                     {d.by_clerk.map((c) => (
-                      <tr key={c.clerk}><td>{c.clerk}</td><td className="num">{c.count}</td><td className="num">{money(c.cash)}</td><td className="num">{money(c.credit)}</td><td className="num"><strong>{money(c.total)}</strong></td></tr>
+                      <tr key={c.clerk}><td>{c.clerk}</td><td className="num">{c.count}</td><td className="num">{money(c.cash)}</td><td className="num">{money(c.credit)}</td><td className="num">{money(c.check)}</td><td className="num"><strong>{money(c.total)}</strong></td></tr>
                     ))}
                   </tbody>
                   <tfoot>
-                    <tr><td>Total</td><td className="num">{d.payments.length}</td><td className="num">{money(d.money.cash)}</td><td className="num">{money(d.money.credit)}</td><td className="num">{money(d.money.collected)}</td></tr>
+                    <tr><td>Total</td><td className="num">{d.payments.length}</td><td className="num">{money(d.money.cash)}</td><td className="num">{money(d.money.credit)}</td><td className="num">{money(d.money.check)}</td><td className="num">{money(d.money.collected)}</td></tr>
                   </tfoot>
                 </table>
               </div>
@@ -202,6 +204,7 @@ export default function TodayReport() {
                 <span className="tiny muted">
                   Total {money(d.money.booked)} · <span className="amt-cash">Cash {money(d.checkins.reduce((a, r) => a + num(r.cash), 0))}</span>
                   {' · '}<span className="amt-credit">Credit {money(d.checkins.reduce((a, r) => a + num(r.credit), 0))}</span>
+                  {d.checkins.some((r) => num(r.check)) && <>{' · '}<span className="amt-check">Check {money(d.checkins.reduce((a, r) => a + num(r.check), 0))}</span></>}
                   {num(d.money.unpaid_from_todays_checkins) > 0 && <> · <span className="owed">Unpaid {money(d.money.unpaid_from_todays_checkins)}</span></>}
                 </span>
               )}
@@ -267,8 +270,8 @@ export default function TodayReport() {
                       <tr key={p.id} className={`clickable ${p.type === 'Refund' ? 'refund-row' : ''}`} onClick={() => open(p.stay_id)}>
                         <td>{fmtDateTime(p.paid_at)}</td>
                         <td>{p.type}</td>
-                        <td><span className={`pill ${p.method === 'CASH' ? 'pay-cash' : 'pay-credit'}`}>{p.method === 'CASH' ? 'Cash' : 'Credit'}</span></td>
-                        <td className={`num ${p.type === 'Refund' ? '' : p.method === 'CASH' ? 'amt-cash' : 'amt-credit'}`}>{money(p.amount)}</td>
+                        <td><span className={`pill ${methodInfo(p.method).pill}`}>{methodInfo(p.method).label}</span></td>
+                        <td className={`num ${p.type === 'Refund' ? '' : methodInfo(p.method).amt}`}>{money(p.amount)}</td>
                         <td>{p.guest_name}</td>
                         <td>{p.room_number}</td>
                         <td>{fmtDate(p.check_in_date)}</td>
@@ -299,33 +302,35 @@ export default function TodayReport() {
 }
 
 
-// Totals under "Payments received": payments, refunds, expenses and the net, split cash / credit.
+// Totals under "Payments received": payments, refunds, expenses and the net, split cash / credit / check.
 // Net cash = Cash in drawer; it matches the Cash drawer cards and the Room sheet footer.
 function PaymentTotals({ payments, m }) {
   const add = (rows, method) => rows.filter((p) => p.method === method).reduce((a, p) => a + num(p.amount), 0)
   const pays = payments.filter((p) => p.type !== 'Refund')
   const refunds = payments.filter((p) => p.type === 'Refund')
-  const pc = add(pays, 'CASH'), pr = add(pays, 'CREDIT')
-  const rc = add(refunds, 'CASH'), rr = add(refunds, 'CREDIT')
-  const ec = -num(m.expenses_cash), er = -num(m.expenses_card)
-  const split = (cash, credit) => (
+  const pc = add(pays, 'CASH'), pr = add(pays, 'CREDIT'), pk = add(pays, 'CHECK')
+  const rc = add(refunds, 'CASH'), rr = add(refunds, 'CREDIT'), rk = add(refunds, 'CHECK')
+  const ec = -num(m.expenses_cash), er = -num(m.expenses_card), ek = -num(m.expenses_check)
+  const anyCheck = pk !== 0 || rk !== 0 || ek !== 0
+  const split = (cash, credit, check) => (
     <td colSpan={4} className="pt-split">
       <span className="amt-cash">Cash {money(cash)}</span>
       <span className="amt-credit">Credit {money(credit)}</span>
+      {anyCheck && <span className="amt-check">Check {money(check)}</span>}
     </td>
   )
   return (
     <tfoot className="pay-totals">
-      <tr><td colSpan={3}>Payments ({pays.length})</td><td className="num">{money(pc + pr)}</td>{split(pc, pr)}</tr>
+      <tr><td colSpan={3}>Payments ({pays.length})</td><td className="num">{money(pc + pr + pk)}</td>{split(pc, pr, pk)}</tr>
       {refunds.length > 0 && (
-        <tr className="refund-row"><td colSpan={3}>Refunds ({refunds.length})</td><td className="num">{money(rc + rr)}</td>{split(rc, rr)}</tr>
+        <tr className="refund-row"><td colSpan={3}>Refunds ({refunds.length})</td><td className="num">{money(rc + rr + rk)}</td>{split(rc, rr, rk)}</tr>
       )}
-      {(ec !== 0 || er !== 0) && (
-        <tr className="pt-exp"><td colSpan={3}>Expenses<div className="tiny muted">Listed under Cash drawer</div></td><td className="num">{money(ec + er)}</td>{split(ec, er)}</tr>
+      {(ec !== 0 || er !== 0 || ek !== 0) && (
+        <tr className="pt-exp"><td colSpan={3}>Expenses<div className="tiny muted">Listed under Cash drawer</div></td><td className="num">{money(ec + er + ek)}</td>{split(ec, er, ek)}</tr>
       )}
       <tr className="pt-net">
         <td colSpan={3}>Net total<div className="tiny muted">Cash = Cash in drawer</div></td>
-        <td className="num">{money(pc + pr + rc + rr + ec + er)}</td>{split(pc + rc + ec, pr + rr + er)}
+        <td className="num">{money(pc + pr + pk + rc + rr + rk + ec + er + ek)}</td>{split(pc + rc + ec, pr + rr + er, pk + rk + ek)}
       </tr>
     </tfoot>
   )

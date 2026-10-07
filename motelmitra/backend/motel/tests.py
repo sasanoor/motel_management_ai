@@ -1347,3 +1347,96 @@ class SingleLoginAndCarryTests(APITestCase):
         self.assertEqual(self.client.get(f"/api/stays/{old['id']}/").data["balance"], "100.00")
         self.client.post(f"/api/stays/{new['id']}/restore/", {"force": True}, format="json")
         self.assertEqual(self.client.get(f"/api/stays/{old['id']}/").data["balance"], "0.00")
+
+
+class SubscriptionTests(APITestCase):
+    def login(self, u, p):
+        r = self.client.post("/api/auth/login/", {"username": u, "password": p}, format="json")
+        if r.status_code == 200:
+            self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+        return r
+
+    def test_plans_expiry_warning_and_renewal(self):
+        seed()
+        today = timezone.localdate()
+        motel = Client.objects.get(users__username="clerk")
+        self.login("superadmin", "admin123")
+        plans = self.client.get("/api/plans/").data
+        self.assertEqual([(p["name"], p["months"]) for p in plans], [("Monthly", 1), ("3 months", 3), ("1 year", 12)])
+        monthly = plans[0]["id"]
+        # no plan yet: works as before
+        self.assertEqual(self.client.get(f"/api/clients/{motel.id}/").data["plan"]["status"], "none")
+        # plan that ended yesterday -> expired
+        start = today - datetime.timedelta(days=40)
+        r = self.client.post(f"/api/clients/{motel.id}/subscriptions/", {"plan": monthly, "start_date": str(start)}, format="json")
+        self.assertEqual(r.data["plan"]["status"], "expired", r.data)
+        # clerk cannot log in; admin can, but only the plan screen works
+        r = self.login("clerk", "clerk123")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("Ask the motel owner to renew", str(r.data))
+        r = self.login("owner", "owner123")
+        self.assertEqual((r.status_code, r.data["plan"]["status"]), (200, "expired"))
+        self.assertEqual(self.client.get("/api/subscription/").data["plan"]["status"], "expired")
+        r = self.client.get("/api/stays/")
+        self.assertEqual((r.status_code, r.data.get("code")), (403, "plan_expired"))
+        # super admin renews with no start date -> starts today, everyone works again
+        self.login("superadmin", "admin123")
+        r = self.client.post(f"/api/clients/{motel.id}/subscriptions/", {"plan": plans[2]["id"], "notes": "Paid by Zelle"}, format="json")
+        st = r.data["plan"]
+        self.assertEqual((st["status"], str(st["start_date"])), ("active", str(today)))
+        self.assertEqual(r.data["history"][0]["price"], "799.00")
+        self.assertEqual(self.login("clerk", "clerk123").status_code, 200)
+        self.assertEqual(self.client.get("/api/stays/").status_code, 200)
+        # early renewal stacks after the paid-up date
+        self.login("superadmin", "admin123")
+        r = self.client.post(f"/api/clients/{motel.id}/subscriptions/", {"plan": monthly, "price": "70"}, format="json")
+        self.assertEqual(str(r.data["history"][0]["start_date"]), str(st["end_date"] + datetime.timedelta(days=1)
+                                                                    if not isinstance(st["end_date"], str)
+                                                                    else datetime.date.fromisoformat(st["end_date"]) + datetime.timedelta(days=1)))
+        # remove both, add a plan ending in 3 days -> expiring warning
+        for h in r.data["history"]:
+            self.client.delete(f"/api/clients/{motel.id}/subscriptions/{h['id']}/")
+        r = self.client.post(f"/api/clients/{motel.id}/subscriptions/",
+                             {"plan": monthly, "start_date": str(today - datetime.timedelta(days=27))}, format="json")
+        self.assertEqual(r.data["plan"]["status"], "expiring")
+        self.assertLess(r.data["plan"]["days_left"], 7)
+        # clerks are not super admin
+        self.login("clerk", "clerk123")
+        self.assertEqual(self.client.get("/api/plans/").status_code, 403)
+
+
+class CheckPaymentsTests(APITestCase):
+    def test_check_everywhere_stayover_type_and_due_out_list(self):
+        seed()
+        r = self.client.post("/api/auth/login/", {"username": "clerk", "password": "clerk123"}, format="json")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+        today = timezone.localdate()
+        free = [x for x in self.client.get("/api/rooms/board/").data if not x["occupied"]]
+        s = self.client.post("/api/stays/", {"room": free[0]["id"], "check_in_date": str(today), "check_in_time": "14:00",
+            "check_out_date": str(today + datetime.timedelta(days=2)), "check_out_time": "11:00", "num_guests": 1,
+            "rate": "70", "name": "Check Payer", "cash": "20", "check": "50", "room_status_ok": True}, format="json")
+        self.assertEqual(s.status_code, 201, s.data)
+        st = self.client.get(f"/api/stays/{s.data['id']}/").data
+        self.assertEqual((st["check_paid"], st["balance"]), ("50.00", "70.00"))
+        # balance payment by check
+        r = self.client.post(f"/api/stays/{st['id']}/payments/", {"check": "30"}, format="json")
+        self.assertEqual((r.status_code, r.data["balance"]), (201, "40.00"))
+        # + Stay: 1 night, pet fee + late fee, paid by check -> stay-over payment
+        r = self.client.post(f"/api/stays/{st['id']}/extend/", {"periods": 1, "check": "135", "pets": 1,
+                                                                 "pet_fee_add": "15", "late_fee_add": "10"}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual((r.data["total_amount"], r.data["balance"], r.data["pet_fee"], r.data["late_fee"], r.data["pets"]),
+                         ("235.00", "0.00", "15.00", "10.00", 1))
+        last = r.data["payments"][-1]
+        self.assertEqual((last["method"], last["kind"]), ("CHECK", "STAYOVER"))
+        rep = self.client.get("/api/reports/today/").data
+        self.assertEqual(rep["money"]["check"], "215.00")
+        self.assertIn("Stay-over payment", [p["type"] for p in rep["payments"]])
+        col = self.client.get("/api/reports/collections/", {"start": str(today), "end": str(today)}).data
+        self.assertEqual(col["totals"]["check"], "215.00")
+        self.assertEqual(self.client.get("/api/dashboard/").data["day_money"]["check"], "215.00")
+        # refund and expense by check are accepted
+        self.assertEqual(self.client.post("/api/expenses/", {"amount": "12", "method": "CHECK", "description": "Plumber"}, format="json").status_code, 201)
+        # Night Audit preview lists guests still due out with their names
+        prev = self.client.get("/api/business-day/preview/").data["summary"]
+        self.assertEqual(len(prev["still_due_out_guests"]), prev["still_due_out"])

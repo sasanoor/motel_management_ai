@@ -2,7 +2,8 @@ from django.db import transaction
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-from .models import Client, User
+from .models import Client, Plan, Subscription, User
+from .subscription import plan_status
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -45,16 +46,47 @@ class UserSerializer(serializers.ModelSerializer):
         return instance
 
 
+class PlanSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Plan
+        fields = ["id", "name", "months", "price", "is_active"]
+
+    def validate_months(self, v):
+        if not 1 <= v <= 60:
+            raise serializers.ValidationError("Months must be 1 to 60.")
+        return v
+
+    def validate_price(self, v):
+        if v < 0:
+            raise serializers.ValidationError("Price cannot be negative.")
+        return v
+
+
+class SubscriptionSerializer(serializers.ModelSerializer):
+    created_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Subscription
+        fields = ["id", "plan", "plan_name", "months", "price", "start_date", "end_date", "notes", "created_by_name", "created_at"]
+
+    def get_created_by_name(self, obj):
+        return (obj.created_by.get_full_name() or obj.created_by.username) if obj.created_by else ""
+
+
 class ClientSerializer(serializers.ModelSerializer):
     user_count = serializers.SerializerMethodField()
     room_count = serializers.SerializerMethodField()
+    plan = serializers.SerializerMethodField()
 
     class Meta:
         model = Client
         fields = [
             "id", "name", "address", "city", "state", "zip_code", "phone", "email",
-            "is_active", "created_at", "user_count", "room_count",
+            "is_active", "created_at", "user_count", "room_count", "plan",
         ]
+
+    def get_plan(self, obj):
+        return plan_status(obj)
 
     def get_user_count(self, obj):
         return obj.users.count()
@@ -117,7 +149,13 @@ class LoginSerializer(TokenObtainPairSerializer):
             raise serializers.ValidationError(
                 {"detail": "Your motel account is inactive. Contact support."}
             )
+        from .subscription import plan_status as _ps
+        st = _ps(user.client) if user.client_id else {"status": "none"}
+        if st["status"] == "expired" and user.role != User.CLIENT_ADMIN:
+            raise serializers.ValidationError({"detail": f"The MotelMitra plan for {user.client.name} ended on "
+                                                         f"{st['paid_until']:%m/%d/%Y}. Ask the motel owner to renew it."})
         data["user"] = UserSerializer(user).data
+        data["plan"] = st
         return data
 
 

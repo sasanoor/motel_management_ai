@@ -67,7 +67,23 @@ def paid_on(stay, day, method=None):
 def pay_type(p):
     if p.kind == Payment.REFUND:
         return "Refund"
+    if p.kind == Payment.STAYOVER:
+        return "Stay-over payment"
     return "Check-in" if p.is_initial else "Balance payment"
+
+
+METHODS = (Payment.CASH, Payment.CREDIT, Payment.CHECK)
+METHOD_KEY = {Payment.CASH: "cash", Payment.CREDIT: "credit", Payment.CHECK: "check"}
+METHOD_LABEL = {Payment.CASH: "Cash", Payment.CREDIT: "Credit", Payment.CHECK: "Check"}
+
+
+def _pay_amounts(data):
+    """Money handed over in one go: [(method, amount)] for cash, card and check."""
+    return [(m, _decimal(data.get(METHOD_KEY[m]) or 0, METHOD_KEY[m])) for m in METHODS]
+
+
+def _by_method(pays, method, skip_refunds=False):
+    return sum((p.amount for p in pays if p.method == method and not (skip_refunds and p.kind == Payment.REFUND)), ZERO)
 
 
 def _move_carried_back(stay, sign):
@@ -221,7 +237,7 @@ def _with_guest_money(qs):
         return Coalesce(Subquery(sq, output_field=dec), Value(ZERO), output_field=dec)
     total_sq = (Stay.objects.filter(guest=OuterRef("pk"), is_deleted=False)
                 .values("guest").annotate(t=Sum("total_amount")).values("t"))
-    return qs.annotate(ann_cash=paid(Payment.CASH), ann_card=paid(Payment.CREDIT),
+    return qs.annotate(ann_cash=paid(Payment.CASH), ann_card=paid(Payment.CREDIT), ann_check=paid(Payment.CHECK),
                        ann_total=Coalesce(Subquery(total_sq, output_field=dec), Value(ZERO), output_field=dec))
 
 
@@ -489,15 +505,15 @@ class StayViewSet(viewsets.ModelViewSet):
     def payments(self, request, pk=None):
         """Add a balance payment. It is linked to the stay, so it rolls into the check-in date report."""
         stay = self.get_object()
-        if "cash" in request.data or "credit" in request.data:
-            # Same as check-in: cash and / or card in one go, card fee added to the stay's charges.
-            cash = _decimal(request.data.get("cash") or 0, "cash")
-            credit = _decimal(request.data.get("credit") or 0, "credit")
+        if "cash" in request.data or "credit" in request.data or "check" in request.data:
+            # Same as check-in: cash, card and / or check in one go, card fee added to the stay's charges.
+            amounts = _pay_amounts(request.data)
+            credit = dict(amounts)[Payment.CREDIT]
             fee = _decimal(request.data.get("card_fee") or 0, "card_fee")
             # Clerk edited the balance (like at check-in): difference is stored as an adjustment.
             adj = _decimal(request.data.get("adjustment_change") or 0, "balance", allow_negative=True)
-            if cash + credit <= 0 and adj == 0:
-                raise ValidationError({"amount": "Enter a cash or card amount."})
+            if sum(a for _, a in amounts) <= 0 and adj == 0:
+                raise ValidationError({"amount": "Enter a cash, card or check amount."})
             if stay.total_amount + fee + adj < 0:
                 raise ValidationError({"balance": "Total cannot go below zero."})
             if stay.total_amount + fee + adj > MAX_AMOUNT:
@@ -515,7 +531,7 @@ class StayViewSet(viewsets.ModelViewSet):
                         stay.comments = (stay.comments + "\n" if stay.comments else "") + \
                             f"{word} of {abs(adj)} added when taking a balance payment."
                     stay.save()
-                for amt, method in ((cash, Payment.CASH), (credit, Payment.CREDIT)):
+                for method, amt in amounts:
                     if amt > 0:
                         Payment.objects.create(stay=stay, amount=amt, method=method, paid_at=now,
                                                clerk=request.user, notes=notes)
@@ -580,7 +596,7 @@ class StayViewSet(viewsets.ModelViewSet):
         """
         Check a guest out before the booked date and (optionally) refund the difference.
         Body: date, method, room_charge (CUSTOM only), refund_amount (default = full refund due),
-              refund_method CASH | CREDIT, notes.
+              refund_method CASH | CREDIT | CHECK, notes.
         """
         stay = self.get_object()
         depart, method, custom = self._early_args(stay, request.data)
@@ -593,8 +609,8 @@ class StayViewSet(viewsets.ModelViewSet):
         if refund > due:
             raise ValidationError({"refund_amount": f"Refund cannot be more than {due}."})
         refund_method = request.data.get("refund_method") or Payment.CASH
-        if refund > 0 and refund_method not in (Payment.CASH, Payment.CREDIT):
-            raise ValidationError({"refund_method": "Use CASH or CREDIT."})
+        if refund > 0 and refund_method not in METHODS:
+            raise ValidationError({"refund_method": "Use CASH, CREDIT or CHECK."})
         notes = (request.data.get("notes") or "").strip()[:200]
 
         with transaction.atomic():
@@ -635,7 +651,8 @@ class StayViewSet(viewsets.ModelViewSet):
     def extend(self, request, pk=None):
         """
         Add stay: guest stays longer (usually paying in advance). Same entry, same rate.
-        Body: periods (nights / weeks / months by the stay's rent type), cash, credit, card_fee,
+        Body: periods (nights / weeks / months by the stay's rent type), cash, credit, check, card_fee,
+              pets, pet_fee_add, extra_person_fee_add (empty = automatic), late_fee_add, early_checkin_fee_add,
               adjustment_change (balance edited, like check-in), notes, allow_overlap (rent anyway if the room is booked after the current checkout).
         """
         stay = self.get_object()
@@ -683,20 +700,37 @@ class StayViewSet(viewsets.ModelViewSet):
             raise ValidationError({"overlap": f"Room {stay.room.number} is booked for {other.guest.name} "
                                               f"from {other.check_in_date:%m/%d/%Y}. Add stay anyway?"})
 
-        cash = _decimal(request.data.get("cash") or 0, "cash")
-        credit = _decimal(request.data.get("credit") or 0, "credit")
+        amounts = _pay_amounts(request.data)
+        credit = dict(amounts)[Payment.CREDIT]
         fee = _decimal(request.data.get("card_fee") or 0, "card_fee")
         if fee > 0 and credit <= 0:
             raise ValidationError({"card_fee": "Card fee needs a card amount."})
         adj = _decimal(request.data.get("adjustment_change") or 0, "balance", allow_negative=True)
+        # extra charges for the added stay (same boxes as check-in); empty extra person fee = automatic
+        pet_add = _decimal(request.data.get("pet_fee_add") or 0, "pet_fee_add")
+        late_add = _decimal(request.data.get("late_fee_add") or 0, "late_fee_add")
+        early_add = _decimal(request.data.get("early_checkin_fee_add") or 0, "early_checkin_fee_add")
+        raw_xp = request.data.get("extra_person_fee_add")
+        xp_add = None if raw_xp in (None, "") else _decimal(raw_xp, "extra_person_fee_add")
+        try:
+            pets_now = int(request.data.get("pets")) if request.data.get("pets") not in (None, "") else None
+        except (TypeError, ValueError):
+            raise ValidationError({"pets": "Enter a number."})
         notes = (request.data.get("notes") or "").strip()[:255]
         unit = {Stay.DAILY: "night", Stay.WEEKLY: "week", Stay.MONTHLY: "month"}[rtype]
 
         with transaction.atomic():
-            # extra person fee is per night: add the same nightly amount for the new nights
-            if stay.extra_person_fee and stay.num_days:
+            # extra person fee is per night: by default add the same nightly amount for the new nights
+            if xp_add is not None:
+                stay.extra_person_fee = (Decimal(stay.extra_person_fee or 0) + xp_add).quantize(Decimal("0.01"))
+            elif stay.extra_person_fee and stay.num_days:
                 per_night = Decimal(stay.extra_person_fee) / stay.num_days
                 stay.extra_person_fee = (Decimal(stay.extra_person_fee) + per_night * added_nights).quantize(Decimal("0.01"))
+            stay.pet_fee = (stay.pet_fee or ZERO) + pet_add
+            stay.late_fee = (stay.late_fee or ZERO) + late_add
+            stay.early_checkin_fee = (stay.early_checkin_fee or ZERO) + early_add
+            if pets_now is not None and pets_now >= 0:
+                stay.pets = pets_now
             if not same_terms:
                 # different rent type / rate: charged separately, the stay's own nights stay as they were
                 stay.extra_stay_nights = (stay.extra_stay_nights or 0) + added_nights
@@ -709,6 +743,11 @@ class StayViewSet(viewsets.ModelViewSet):
             line = f"Stay added: {n} {unit}{'s' if n > 1 else ''}, checkout {old_out:%m/%d/%Y} -> {new_out:%m/%d/%Y}."
             if not same_terms:
                 line += f" Rate {rate} per {unit} = {(rate * n).quantize(Decimal('0.01'))}."
+            extras = [(lbl, v) for lbl, v in (("pet fee", pet_add), ("late fee", late_add), ("early check-in fee", early_add)) if v]
+            if xp_add:
+                extras.append(("extra person fee", xp_add))
+            if extras:
+                line += " Added " + ", ".join(f"{lbl} {v}" for lbl, v in extras) + "."
             if adj != 0:
                 line += f" {'Discount' if adj < 0 else 'Extra charge'} of {abs(adj)} added."
             stay.comments = (stay.comments + "\n" if stay.comments else "") + line
@@ -716,9 +755,10 @@ class StayViewSet(viewsets.ModelViewSet):
             if stay_qs(request.user.client).get(pk=stay.pk).total_amount < 0:
                 raise ValidationError({"balance": "Total cannot go below zero."})
             now = timezone.now()
-            for amt, method in ((cash, Payment.CASH), (credit, Payment.CREDIT)):
+            for method, amt in amounts:
                 if amt > 0:
                     Payment.objects.create(stay=stay, amount=amt, method=method, paid_at=now, clerk=request.user,
+                                           kind=Payment.STAYOVER,
                                            notes=notes or f"Advance for added stay to {new_out:%m/%d/%Y}")
         stay = stay_qs(request.user.client).get(pk=stay.pk)
         return Response(StaySerializer(stay).data)
@@ -736,8 +776,8 @@ class StayViewSet(viewsets.ModelViewSet):
         if amount > over:
             raise ValidationError({"amount": f"Refund cannot be more than the overpaid amount {over}."})
         method = request.data.get("method") or Payment.CASH
-        if method not in (Payment.CASH, Payment.CREDIT):
-            raise ValidationError({"method": "Use CASH or CREDIT."})
+        if method not in METHODS:
+            raise ValidationError({"method": "Use CASH, CREDIT or CHECK."})
         Payment.objects.create(
             stay=stay, amount=-amount, method=method, kind=Payment.REFUND, paid_at=timezone.now(),
             clerk=request.user, notes=(request.data.get("notes") or "Refund").strip()[:255],
@@ -865,16 +905,18 @@ def dashboard(request):
     day_pays = Payment.objects.filter(stay__client=client, stay__is_deleted=False, business_date=day)
     day_cash = day_pays.filter(method=Payment.CASH).aggregate(t=Sum("amount"))["t"] or ZERO
     day_credit = day_pays.filter(method=Payment.CREDIT).aggregate(t=Sum("amount"))["t"] or ZERO
+    day_check = day_pays.filter(method=Payment.CHECK).aggregate(t=Sum("amount"))["t"] or ZERO
     day_exps = Expense.objects.filter(client=client, business_date=day, is_deleted=False)
     exp_cash = day_exps.filter(method=Expense.CASH).aggregate(t=Sum("amount"))["t"] or ZERO
     exp_card = day_exps.filter(method=Expense.CREDIT).aggregate(t=Sum("amount"))["t"] or ZERO
+    exp_check = day_exps.filter(method=Expense.CHECK).aggregate(t=Sum("amount"))["t"] or ZERO
     q2 = lambda v: str(Decimal(v).quantize(Decimal("0.01")))
 
     issues = _open_issue_counts(client)
     return Response({
         "date": day,
-        "day_money": {"cash": q2(day_cash), "credit": q2(day_credit),
-                      "expenses_cash": q2(exp_cash), "expenses_card": q2(exp_card)},
+        "day_money": {"cash": q2(day_cash), "credit": q2(day_credit), "check": q2(day_check),
+                      "expenses_cash": q2(exp_cash), "expenses_card": q2(exp_card), "expenses_check": q2(exp_check)},
         "stats": {
             "total_rooms": total_rooms,
             "occupied": len({s.room_id for s in occupied}),
@@ -925,19 +967,20 @@ def report_checkins(request):
     client = get_request_client(request)
     start, end = _date_range(request, client=client)
     stays = stay_qs(client).filter(is_deleted=False, check_in_date__range=(start, end)).order_by("check_in_date", "room__number")
-    rows, totals = [], {"total": ZERO, "cash": ZERO, "credit": ZERO, "paid_later": ZERO, "paid": ZERO, "balance": ZERO}
+    rows, totals = [], {"total": ZERO, "cash": ZERO, "credit": ZERO, "check": ZERO, "paid_later": ZERO, "paid": ZERO, "balance": ZERO}
     for s in stays:
-        # cash / credit = taken on the check-in day; money taken on later days counts on those days
+        # cash / credit / check = taken on the check-in day; money taken on later days counts on those days
         cash, credit = paid_on(s, s.check_in_date, Payment.CASH), paid_on(s, s.check_in_date, Payment.CREDIT)
+        chk = paid_on(s, s.check_in_date, Payment.CHECK)
         all_paid = paid(s)
-        later = all_paid - cash - credit
+        later = all_paid - cash - credit - chk
         bal = s.total_amount - all_paid
         rows.append({
             "id": s.id, "check_in_date": s.check_in_date, "room_number": s.room.number,
             "room_type": s.room.room_type.name, "guest_name": s.guest.name,
             "num_guests": s.num_guests, "num_days": s.num_days, "rate": str(s.rate),
             "rate_type": s.rate_type, "periods": s.periods, "fees": str(s.charges_total),
-            "total": str(s.total_amount), "cash": str(cash), "credit": str(credit),
+            "total": str(s.total_amount), "cash": str(cash), "credit": str(credit), "check": str(chk),
             "paid_later": str(later), "paid": str(all_paid), "balance": str(bal),
             "clerk": (s.clerk.get_full_name() or s.clerk.username) if s.clerk else "",
             "status": s.status,
@@ -945,6 +988,7 @@ def report_checkins(request):
         totals["total"] += s.total_amount
         totals["cash"] += cash
         totals["credit"] += credit
+        totals["check"] += chk
         totals["paid_later"] += later
         totals["paid"] += all_paid
         totals["balance"] += bal
@@ -957,7 +1001,7 @@ def report_checkins(request):
 @api_view(["GET"])
 @permission_classes([IsClientStaffOrSuperAdmin])
 def report_collections(request):
-    """Money actually collected per day (by payment date), cash vs credit, net of refunds given."""
+    """Money actually collected per day (by payment date), cash / credit / check, net of refunds given."""
     client = get_request_client(request)
     start, end = _date_range(request, client=client)
     pays = (
@@ -965,14 +1009,14 @@ def report_collections(request):
         .select_related("stay", "stay__guest", "stay__room", "clerk").order_by("paid_at")
     )
     by_day, detail = {}, []
-    totals = {"cash": ZERO, "credit": ZERO, "refunds": ZERO, "total": ZERO}
+    totals = {"cash": ZERO, "credit": ZERO, "check": ZERO, "refunds": ZERO, "total": ZERO}
     for p in pays:
         d = p.business_date
-        row = by_day.setdefault(d, {"date": d, "cash": ZERO, "credit": ZERO, "refunds": ZERO, "total": ZERO, "count": 0})
+        row = by_day.setdefault(d, {"date": d, "cash": ZERO, "credit": ZERO, "check": ZERO, "refunds": ZERO, "total": ZERO, "count": 0})
         if p.kind == Payment.REFUND:
             row["refunds"] += -p.amount
             totals["refunds"] += -p.amount
-        key = "cash" if p.method == Payment.CASH else "credit"
+        key = METHOD_KEY.get(p.method, "credit")
         row[key] += p.amount
         row["total"] += p.amount
         row["count"] += 1
@@ -985,7 +1029,7 @@ def report_collections(request):
             "check_in_date": p.stay.check_in_date,
             "clerk": (p.clerk.get_full_name() or p.clerk.username) if p.clerk else "",
         })
-    days = [{**r, "cash": str(r["cash"]), "credit": str(r["credit"]), "refunds": str(r["refunds"]), "total": str(r["total"])}
+    days = [{**r, "cash": str(r["cash"]), "credit": str(r["credit"]), "check": str(r["check"]), "refunds": str(r["refunds"]), "total": str(r["total"])}
             for r in sorted(by_day.values(), key=lambda r: r["date"])]
     return Response({
         "start": start, "end": end, "days": days, "payments": detail,
@@ -1094,6 +1138,7 @@ def report_today(request):
 
     cash = sum((p.amount for p in pays if p.method == Payment.CASH), ZERO)
     credit = sum((p.amount for p in pays if p.method == Payment.CREDIT), ZERO)
+    check = sum((p.amount for p in pays if p.method == Payment.CHECK), ZERO)
     from_checkins = sum((p.amount for p in pays if p.stay.check_in_date == day), ZERO)
     refunds = sum((-p.amount for p in pays if p.kind == Payment.REFUND), ZERO)
 
@@ -1104,11 +1149,12 @@ def report_today(request):
         exps = [e for e in exps if e.clerk_id == request.user.id]
     exp_cash = sum((e.amount for e in exps if e.method == Expense.CASH), ZERO)
     exp_card = sum((e.amount for e in exps if e.method == Expense.CREDIT), ZERO)
+    exp_check = sum((e.amount for e in exps if e.method == Expense.CHECK), ZERO)
 
     by_clerk = {}
     for p in pays:
-        row = by_clerk.setdefault(clerk_name(p.clerk) or "Unknown", {"cash": ZERO, "credit": ZERO, "count": 0})
-        row["cash" if p.method == Payment.CASH else "credit"] += p.amount
+        row = by_clerk.setdefault(clerk_name(p.clerk) or "Unknown", {"cash": ZERO, "credit": ZERO, "check": ZERO, "count": 0})
+        row[METHOD_KEY.get(p.method, "credit")] += p.amount
         row["count"] += 1
 
     # occupancy tonight
@@ -1118,8 +1164,8 @@ def report_today(request):
 
     checkin_rows, booked, owed = [], ZERO, ZERO
     for s in checkins:
-        c, cr = paid_on(s, day, Payment.CASH), paid_on(s, day, Payment.CREDIT)
-        other = paid(s) - c - cr   # taken on other days (counted on those days)
+        c, cr, ck = paid_on(s, day, Payment.CASH), paid_on(s, day, Payment.CREDIT), paid_on(s, day, Payment.CHECK)
+        other = paid(s) - c - cr - ck   # taken on other days (counted on those days)
         bal = s.total_amount - paid(s)
         booked += s.total_amount
         owed += max(bal, ZERO)
@@ -1128,7 +1174,7 @@ def report_today(request):
             "guest_name": s.guest.name, "num_guests": s.num_guests, "num_days": s.num_days,
             "check_out_date": s.check_out_date, "rate": str(s.rate), "total": str(s.total_amount),
             "rate_type": s.rate_type, "periods": s.periods,
-            "cash": str(c), "credit": str(cr), "paid_other_days": str(other),
+            "cash": str(c), "credit": str(cr), "check": str(ck), "paid_other_days": str(other),
             "balance": str(bal), "clerk": clerk_name(s.clerk),
             "do_not_rent": s.guest.do_not_rent,
         })
@@ -1149,21 +1195,23 @@ def report_today(request):
             "booked": str(booked),
             "cash": str(cash),
             "credit": str(credit),
-            "collected": str(cash + credit),
+            "check": str(check),
+            "collected": str(cash + credit + check),
             "refunds": str(refunds),
-            "received": str(cash + credit + refunds),
+            "received": str(cash + credit + check + refunds),
             "expenses_cash": str(exp_cash),
             "expenses_card": str(exp_card),
-            "expenses": str(exp_cash + exp_card),
+            "expenses_check": str(exp_check),
+            "expenses": str(exp_cash + exp_card + exp_check),
             "cash_in_drawer": str(cash - exp_cash),
-            "net": str(cash + credit - exp_cash - exp_card),
+            "net": str(cash + credit + check - exp_cash - exp_card - exp_check),
             "from_todays_checkins": str(from_checkins),
-            "from_earlier_stays": str(cash + credit - from_checkins),
+            "from_earlier_stays": str(cash + credit + check - from_checkins),
             "unpaid_from_todays_checkins": str(owed),
         },
         "by_clerk": [
-            {"clerk": k, "cash": str(v["cash"]), "credit": str(v["credit"]),
-             "total": str(v["cash"] + v["credit"]), "count": v["count"]}
+            {"clerk": k, "cash": str(v["cash"]), "credit": str(v["credit"]), "check": str(v["check"]),
+             "total": str(v["cash"] + v["credit"] + v["check"]), "count": v["count"]}
             for k, v in sorted(by_clerk.items())
         ],
         "checkins": checkin_rows,
@@ -1317,6 +1365,7 @@ def day_summary(client, day):
     pays = list(Payment.objects.filter(stay__client=client, stay__is_deleted=False, business_date=day))
     cash = sum((p.amount for p in pays if p.method == Payment.CASH), ZERO)
     credit = sum((p.amount for p in pays if p.method == Payment.CREDIT), ZERO)
+    check = sum((p.amount for p in pays if p.method == Payment.CHECK), ZERO)
     refunds = sum((-p.amount for p in pays if p.kind == Payment.REFUND), ZERO)
     staying = list(base.filter(check_in_date__lte=day, check_out_date__gte=day))
     total_rooms = Room.objects.filter(client=client, is_active=True).count()
@@ -1330,6 +1379,11 @@ def day_summary(client, day):
         "checkouts_done": len([s for s in staying if s.check_out_date == day and s.status == Stay.CHECKED_OUT]),
         "still_due_out": len(due_out),
         "still_due_out_rooms": [s.room.number for s in due_out],
+        # guests who should have left today but are still checked in (warned before Night Audit)
+        "still_due_out_guests": [{"stay_id": s.id, "room": s.room.number, "guest": s.guest.name,
+                                  "check_out_time": s.check_out_time.strftime("%H:%M"),
+                                  "balance": str(s.total_amount - paid(s))}
+                                 for s in sorted(due_out, key=lambda x: (len(x.room.number), x.room.number))],
         "unpaid_checkins": len(unpaid),
         "unpaid_amount": str(sum((s.total_amount - paid(s) for s in unpaid), ZERO)),
         "occupied": occupied,
@@ -1337,8 +1391,9 @@ def day_summary(client, day):
         "payments": len(pays),
         "cash": str(cash),
         "credit": str(credit),
+        "check": str(check),
         "refunds": str(refunds),
-        "collected": str(cash + credit),
+        "collected": str(cash + credit + check),
     }
 
 
@@ -1487,13 +1542,14 @@ def report_payment_history(request):
     def clerk(u):
         return (u.get_full_name() or u.username) if u else ""
 
-    rows, totals = [], {"total": ZERO, "cash": ZERO, "credit": ZERO, "refunds": ZERO, "paid": ZERO, "balance": ZERO}
+    rows, totals = [], {"total": ZERO, "cash": ZERO, "credit": ZERO, "check": ZERO, "refunds": ZERO, "paid": ZERO, "balance": ZERO}
     for s in stays:
         pays = sorted(s.payments.all(), key=lambda x: x.paid_at)
         cash = sum((x.amount for x in pays if x.method == Payment.CASH), ZERO)
         credit = sum((x.amount for x in pays if x.method == Payment.CREDIT), ZERO)
+        check = sum((x.amount for x in pays if x.method == Payment.CHECK), ZERO)
         refunds = sum((-x.amount for x in pays if x.kind == Payment.REFUND), ZERO)
-        bal = s.total_amount - cash - credit
+        bal = s.total_amount - cash - credit - check
         g = s.guest
         rows.append({
             "id": s.id, "status": s.status,
@@ -1503,8 +1559,8 @@ def report_payment_history(request):
             "check_in_date": s.check_in_date, "check_out_date": s.check_out_date, "num_days": s.num_days,
             "rate": str(s.rate), "rate_type": s.rate_type, "num_guests": s.num_guests,
             "room_charge": str(s.room_charge), "fees": str(s.charges_total), "adjustment": str(s.adjustment),
-            "total": str(s.total_amount), "cash": str(cash), "credit": str(credit), "refunds": str(refunds),
-            "paid": str(cash + credit), "balance": str(bal),
+            "total": str(s.total_amount), "cash": str(cash), "credit": str(credit), "check": str(check), "refunds": str(refunds),
+            "paid": str(cash + credit + check), "balance": str(bal),
             "payments": [{
                 "id": x.id, "business_date": x.business_date, "paid_at": x.paid_at, "type": pay_type(x),
                 "method": x.method, "amount": str(x.amount), "clerk": clerk(x.clerk), "notes": x.notes,
@@ -1513,8 +1569,9 @@ def report_payment_history(request):
         totals["total"] += s.total_amount
         totals["cash"] += cash
         totals["credit"] += credit
+        totals["check"] += check
         totals["refunds"] += refunds
-        totals["paid"] += cash + credit
+        totals["paid"] += cash + credit + check
         totals["balance"] += bal
     return Response({"count": len(rows), "more": more, "rows": rows, "totals": {k: str(v) for k, v in totals.items()}})
 
@@ -2138,7 +2195,7 @@ def _cr_fields():
                 "nights": ("Nights", _CR_INT), "guests": ("Guests", _CR_INT),
                 "rate": ("Rate", _CR_MONEY), "room_charge": ("Room charge", _CR_MONEY), "fees": ("Fees", _CR_MONEY),
                 "total": ("Total", _CR_MONEY), "cash": ("Cash paid", _CR_MONEY), "credit": ("Card paid", _CR_MONEY),
-                "refunds": ("Refunds", _CR_MONEY), "paid": ("Paid", _CR_MONEY), "balance": ("Balance", _CR_MONEY),
+                "check": ("Check paid", _CR_MONEY), "refunds": ("Refunds", _CR_MONEY), "paid": ("Paid", _CR_MONEY), "balance": ("Balance", _CR_MONEY),
             },
         },
         "payments": {
@@ -2147,7 +2204,7 @@ def _cr_fields():
             "fields": {
                 "date": ("Business day", _CR_DATE), "time": ("Time", _CR_TEXT),
                 "type": ("Type", _CR_CHOICE), "method": ("Method", _CR_CHOICE), "amount": ("Amount", _CR_MONEY),
-                "cash": ("Cash", _CR_MONEY), "credit": ("Credit", _CR_MONEY),
+                "cash": ("Cash", _CR_MONEY), "credit": ("Credit", _CR_MONEY), "check": ("Check", _CR_MONEY),
                 "guest": ("Guest", _CR_TEXT), "room": ("Room", _CR_CHOICE), "room_type": ("Room type", _CR_CHOICE),
                 "check_in": ("Check-in", _CR_DATE), "clerk": ("Clerk", _CR_CHOICE), "notes": ("Notes", _CR_TEXT),
             },
@@ -2158,7 +2215,8 @@ def _cr_fields():
             "fields": {
                 "date": ("Business day", _CR_DATE), "description": ("Description", _CR_TEXT),
                 "method": ("Paid by", _CR_CHOICE), "amount": ("Amount", _CR_MONEY),
-                "cash": ("Cash", _CR_MONEY), "credit": ("Card", _CR_MONEY), "clerk": ("Clerk", _CR_CHOICE),
+                "cash": ("Cash", _CR_MONEY), "credit": ("Card", _CR_MONEY), "check": ("Check", _CR_MONEY),
+                "clerk": ("Clerk", _CR_CHOICE),
             },
         },
         "problems": {
@@ -2181,7 +2239,7 @@ def _cr_fields():
                 "stays": ("Stays", _CR_INT), "nights": ("Nights", _CR_INT),
                 "first_stay": ("First check-in", _CR_DATE), "last_stay": ("Last check-in", _CR_DATE),
                 "total": ("Total", _CR_MONEY), "cash": ("Cash paid", _CR_MONEY), "credit": ("Card paid", _CR_MONEY),
-                "balance": ("Balance", _CR_MONEY),
+                "check": ("Check paid", _CR_MONEY), "balance": ("Balance", _CR_MONEY),
             },
         },
     }
@@ -2198,8 +2256,9 @@ def _cr_stay_rows(client, start, end, date_field):
         pays = list(s.payments.all())
         cash = sum((p.amount for p in pays if p.method == Payment.CASH and p.kind != Payment.REFUND), ZERO)
         credit = sum((p.amount for p in pays if p.method == Payment.CREDIT and p.kind != Payment.REFUND), ZERO)
+        chk = sum((p.amount for p in pays if p.method == Payment.CHECK and p.kind != Payment.REFUND), ZERO)
         refunds = sum((p.amount for p in pays if p.kind == Payment.REFUND), ZERO)
-        paid_all = cash + credit + refunds
+        paid_all = cash + credit + chk + refunds
         g = s.guest
         rows.append({
             "_id": s.id, "_guest_id": g.id,
@@ -2209,7 +2268,7 @@ def _cr_stay_rows(client, start, end, date_field):
             "status": "In house" if s.status == Stay.CHECKED_IN else "Checked out", "clerk": _cr_name(s.clerk),
             "dnr": "Yes" if g.do_not_rent else "No", "nights": s.num_days, "guests": s.num_guests,
             "rate": s.rate, "room_charge": s.room_charge, "fees": s.charges_total, "total": s.total_amount,
-            "cash": cash, "credit": credit, "refunds": refunds, "paid": paid_all, "balance": s.total_amount - paid_all,
+            "cash": cash, "credit": credit, "check": chk, "refunds": refunds, "paid": paid_all, "balance": s.total_amount - paid_all,
         })
     return rows
 
@@ -2222,8 +2281,9 @@ def _cr_rows(client, source, start, end, date_field):
                 .select_related("stay", "stay__guest", "stay__room", "stay__room__room_type", "clerk").order_by("paid_at"))
         return [{
             "_id": p.stay_id, "date": p.business_date, "time": timezone.localtime(p.paid_at).strftime("%I:%M %p").lstrip("0"),
-            "type": pay_type(p), "method": "Cash" if p.method == Payment.CASH else "Credit", "amount": p.amount,
+            "type": pay_type(p), "method": METHOD_LABEL.get(p.method, p.method), "amount": p.amount,
             "cash": p.amount if p.method == Payment.CASH else ZERO, "credit": p.amount if p.method == Payment.CREDIT else ZERO,
+            "check": p.amount if p.method == Payment.CHECK else ZERO,
             "guest": p.stay.guest.name, "room": p.stay.room.number, "room_type": p.stay.room.room_type.name,
             "check_in": p.stay.check_in_date, "clerk": _cr_name(p.clerk), "notes": p.notes,
         } for p in pays]
@@ -2231,9 +2291,10 @@ def _cr_rows(client, source, start, end, date_field):
         exps = (Expense.objects.filter(client=client, is_deleted=False, business_date__range=(start, end))
                 .select_related("clerk").order_by("business_date", "created_at"))
         return [{
-            "date": e.business_date, "description": e.description, "method": "Cash" if e.method == Expense.CASH else "Card",
+            "date": e.business_date, "description": e.description, "method": {"CASH": "Cash", "CREDIT": "Card", "CHECK": "Check"}.get(e.method, e.method),
             "amount": e.amount, "cash": e.amount if e.method == Expense.CASH else ZERO,
-            "credit": e.amount if e.method == Expense.CREDIT else ZERO, "clerk": _cr_name(e.clerk),
+            "credit": e.amount if e.method == Expense.CREDIT else ZERO,
+            "check": e.amount if e.method == Expense.CHECK else ZERO, "clerk": _cr_name(e.clerk),
         } for e in exps]
     if source == "problems":
         # Dates are business days (a problem reported at 2 AM belongs to the day before, like payments).
@@ -2261,13 +2322,13 @@ def _cr_rows(client, source, start, end, date_field):
             g = out.setdefault(r["_guest_id"], {
                 "guest": r["guest"], "phone": r["phone"], "plate": r["plate"], "city": r["city"], "state": r["state"],
                 "dnr": r["dnr"], "stays": 0, "nights": 0, "first_stay": r["check_in"], "last_stay": r["check_in"],
-                "total": ZERO, "cash": ZERO, "credit": ZERO, "balance": ZERO,
+                "total": ZERO, "cash": ZERO, "credit": ZERO, "check": ZERO, "balance": ZERO,
             })
             g["stays"] += 1
             g["nights"] += r["nights"]
             g["first_stay"] = min(g["first_stay"], r["check_in"])
             g["last_stay"] = max(g["last_stay"], r["check_in"])
-            for k in ("total", "cash", "credit", "balance"):
+            for k in ("total", "cash", "credit", "check", "balance"):
                 g[k] += r[k]
         return list(out.values())
     raise ValidationError({"source": "Unknown source."})
@@ -2412,8 +2473,8 @@ def custom_report_fields(request):
         "room_type": list(RoomType.objects.filter(client=client).values_list("name", flat=True)),
         "clerk": sorted({_cr_name(u) for u in User.objects.filter(client=client)}),
         "rate_type": ["Daily", "Weekly", "Monthly"], "status": ["In house", "Checked out"], "dnr": ["Yes", "No"],
-        "type": ["Check-in", "Balance payment", "Refund"],
-        "method": ["Cash", "Credit", "Card"],
+        "type": ["Check-in", "Balance payment", "Stay-over payment", "Refund"],
+        "method": ["Cash", "Credit", "Card", "Check"],
         "category": [c[1] for c in RoomIssue.CATEGORIES], "priority": [c[1] for c in RoomIssue.PRIORITIES],
         "out_of_order": ["Yes", "No"],
     }

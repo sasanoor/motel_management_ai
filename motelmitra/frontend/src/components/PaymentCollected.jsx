@@ -2,15 +2,16 @@ import { useAuth } from '../auth'
 import { money } from '../utils'
 
 /**
- * "Extra charges" (card fee) + "Payment collected" (Cash | Credit / card | Balance | Clerk),
+ * "Extra charges" (card fee) + "Payment collected" (Cash | Credit / card | Check | Balance, Clerk),
  * laid out exactly like the check-in page. Used by the Pay and Add stay windows.
  * p = usePayment(...)
  */
-export default function PaymentCollected({ p, totalNote }) {
+export default function PaymentCollected({ p, totalNote, extraFields = null, extraTotal = 0 }) {
   const { user } = useAuth()
   return (
     <div className="form-grid cols-4 pay-collected">
       <div className="subhead span-4">Extra charges</div>
+      {extraFields}
       <label>Card fee
         <span className="fee-input">
           <input type="number" step="0.01" min="0" value={p.fee ?? p.cardFee}
@@ -21,7 +22,7 @@ export default function PaymentCollected({ p, totalNote }) {
       </label>
       <div className="readout">
         <span>Total extra charges</span>
-        <strong>{money(p.cardFee)}</strong>
+        <strong>{money(extraTotal + p.cardFee)}</strong>
       </div>
       <div className="readout span-2">
         {totalNote}
@@ -36,11 +37,15 @@ export default function PaymentCollected({ p, totalNote }) {
         <input type="number" step="0.01" min="0" value={p.credit} onChange={(e) => p.setCredit(e.target.value)} placeholder="0.00" />
         <button type="button" className="link-btn" onClick={p.balanceOnCard}>Put balance on card</button>
       </label>
+      <label>Check
+        <input type="number" step="0.01" min="0" value={p.check} onChange={(e) => p.setCheck(e.target.value)} placeholder="0.00" />
+        <button type="button" className="link-btn" onClick={p.balanceInCheck}>Put balance in check</button>
+      </label>
       <label>Balance
         <input type="number" step="0.01" className={p.after > 0 ? 'input-owed' : ''} {...p.balanceInput} />
         {p.after < 0 && <span className="hint">More than owed; guest will be in credit</span>}
       </label>
-      <div className="readout">
+      <div className="readout span-4 clerk-line">
         <span>Clerk</span>
         <strong>{user.full_name}</strong>
       </div>

@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate, useOutletContext } from 'react-router-dom'
 import api, { errorText } from '../api'
 import { useAuth } from '../auth'
-import { Alert, Empty, PageHead, Stat } from '../components/ui'
+import { Alert, Empty, Modal, PageHead, Stat } from '../components/ui'
+import CheckoutModal from '../components/CheckoutModal'
 import { addDays, fmtDateTime, fmtDay, fmtTime, money, num } from '../utils'
 import { confirmBox } from '../confirm'
 
@@ -22,16 +23,29 @@ export default function NightAudit() {
   const [changeTime, setChangeTime] = useState('')
   const [saved, setMsg] = useState('')
   const msg = saved || location.state?.msg || ''
+  const [dueOut, setDueOut] = useState(false)        // "guests not checked out" window before closing
+  const [checkingOut, setCheckingOut] = useState(null)
 
+  const loadPreview = () => api.get('/business-day/preview/').then((r) => { setD(r.data); setChangeTime(r.data.day_change_time); return r.data })
   useEffect(() => {
-    api.get('/business-day/preview/').then((r) => { setD(r.data); setChangeTime(r.data.day_change_time) }).catch((e) => setErr(errorText(e)))
+    loadPreview().catch((e) => setErr(errorText(e)))
     api.get('/business-day/history/').then((r) => setHistory(r.data)).catch(() => {})
   }, [])
 
+  // Step 1: guests who should have left today are listed first, with a Check out button each.
+  function startClose() {
+    if (d.summary.still_due_out_guests?.length) setDueOut(true)
+    else closeDay()
+  }
+  async function openCheckout(g) {
+    try { const { data } = await api.get(`/stays/${g.stay_id}/`); setCheckingOut(data) } catch (e) { setErr(errorText(e)) }
+  }
+
   async function closeDay() {
+    setDueOut(false)
     const day = d.business_date
     const warn = []
-    if (d.summary.still_due_out) warn.push(`${d.summary.still_due_out} guest(s) still due out (room ${d.summary.still_due_out_rooms.join(', ')})`)
+    if (d.summary.still_due_out) warn.push(`${d.summary.still_due_out} guest(s) not checked out (room ${d.summary.still_due_out_rooms.join(', ')}): they stay in house`)
     if (d.summary.unpaid_checkins) warn.push(`${d.summary.unpaid_checkins} check-in(s) with ${money(d.summary.unpaid_amount)} unpaid`)
     const ok = await confirmBox({
       title: `Close ${fmtDay(day)}?`,
@@ -112,7 +126,7 @@ export default function NightAudit() {
           </span>
         </div>
         <div className="audit-action">
-          <button className="btn btn-primary btn-lg" onClick={closeDay} disabled={busy || !d.can_close}>
+          <button className="btn btn-primary btn-lg" onClick={startClose} disabled={busy || !d.can_close}>
             {busy ? 'Closing…' : `Close ${fmtDay(d.business_date)} & start ${fmtDay(next)}`}
           </button>
           {!d.can_close && <span className="tiny muted">{fmtDay(d.business_date)} has not started yet, so it cannot be closed.</span>}
@@ -127,6 +141,7 @@ export default function NightAudit() {
         <Stat label="Occupied" value={`${s.occupied} / ${s.total_rooms}`} />
         <Stat label="Cash" value={money(s.cash)} tone="good" />
         <Stat label="Credit" value={money(s.credit)} />
+        {Number(s.check) !== 0 && s.check !== undefined && <Stat label="Check" value={money(s.check)} />}
         {num(s.refunds) > 0 && <Stat label="Refunds (included)" value={money(s.refunds)} tone="bad" />}
         <Stat label="Total collected" value={money(s.collected)} tone="good" />
         <Stat label="Unpaid check-ins" value={s.unpaid_checkins ? `${s.unpaid_checkins} · ${money(s.unpaid_amount)}` : 0} tone={s.unpaid_checkins ? 'bad' : ''} />
@@ -143,7 +158,7 @@ export default function NightAudit() {
         {!history.length ? <Empty>No days closed yet.</Empty> : (
           <div className="table-wrap">
             <table className="table">
-              <thead><tr><th>Business day</th><th>Closed at</th><th>Closed by</th><th className="num">Check-ins</th><th className="num">Cash</th><th className="num">Credit</th><th className="num">Refunds</th><th className="num">Collected</th><th></th></tr></thead>
+              <thead><tr><th>Business day</th><th>Closed at</th><th>Closed by</th><th className="num">Check-ins</th><th className="num">Cash</th><th className="num">Credit</th><th className="num">Check</th><th className="num">Refunds</th><th className="num">Collected</th><th></th></tr></thead>
               <tbody>
                 {history.map((h, i) => (
                   <tr key={h.date}>
@@ -153,6 +168,7 @@ export default function NightAudit() {
                     <td className="num">{h.summary.checkins}</td>
                     <td className="num">{money(h.summary.cash)}</td>
                     <td className="num">{money(h.summary.credit)}</td>
+                    <td className="num">{num(h.summary.check) ? money(h.summary.check) : '—'}</td>
                     <td className="num">{num(h.summary.refunds) ? money(h.summary.refunds) : '—'}</td>
                     <td className="num"><strong>{money(h.summary.collected)}</strong></td>
                     <td className="row-actions">
@@ -167,6 +183,38 @@ export default function NightAudit() {
         )}
       </div>
       <p className="tiny muted">Totals are as at closing. Payments are always counted on the business day they were taken.</p>
+
+      {dueOut && d && (
+        <Modal title={`${d.summary.still_due_out_guests.length} guest${d.summary.still_due_out_guests.length === 1 ? ' has' : 's have'} not checked out`} onClose={() => setDueOut(false)} width={680}>
+          <Alert kind="info">These guests were due to leave on {fmtDay(d.business_date)} but are still checked in. Check them out now, or close the day and they stay in house.</Alert>
+          {!d.summary.still_due_out_guests.length ? <Empty>Everyone due out has checked out. 🎉</Empty> : (
+            <table className="table">
+              <thead><tr><th>Room</th><th>Guest</th><th>Checkout time</th><th className="num">Balance</th><th></th></tr></thead>
+              <tbody>
+                {d.summary.still_due_out_guests.map((g) => (
+                  <tr key={g.stay_id}>
+                    <td><span className="room-chip">{g.room}</span></td>
+                    <td><strong>{g.guest}</strong></td>
+                    <td>{fmtTime(g.check_out_time)}</td>
+                    <td className="num"><span className={num(g.balance) > 0 ? 'owed' : ''}>{money(g.balance)}</span></td>
+                    <td className="row-actions"><button className="btn btn-sm btn-primary" onClick={() => openCheckout(g)}>Check out</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          <div className="form-actions">
+            <button className="btn" onClick={() => setDueOut(false)}>Go back</button>
+            <button className="btn btn-warn" onClick={closeDay}>
+              {d.summary.still_due_out_guests.length ? `Close day anyway (${d.summary.still_due_out_guests.length} stay in house)` : 'Continue to close day'}
+            </button>
+          </div>
+        </Modal>
+      )}
+      {checkingOut && (
+        <CheckoutModal stay={checkingOut} onClose={() => setCheckingOut(null)}
+          onDone={() => { setCheckingOut(null); loadPreview().catch(() => {}) }} />
+      )}
 
       {isAdmin && (
         <form className="card settings-card audit-setting" onSubmit={saveTime}>

@@ -18,7 +18,25 @@ def _stale(user, sid):
     return bool(user and user.session_key) and sid != user.session_key
 
 
+PLAN_OPEN_PATHS = ("/api/auth/me/", "/api/subscription/", "/api/version/")
+
+
 class SingleSessionJWTAuthentication(JWTAuthentication):
+    def authenticate(self, request):
+        result = super().authenticate(request)
+        if result and result[0].client_id:
+            from rest_framework.exceptions import PermissionDenied
+            from .subscription import plan_status
+            user = result[0]
+            st = plan_status(user.client)
+            if st["status"] == "expired":
+                admin_ok = user.role == "CLIENT_ADMIN" and request.path in PLAN_OPEN_PATHS
+                if not admin_ok and request.path != "/api/version/":
+                    raise PermissionDenied({"detail": f"The MotelMitra plan for {user.client.name} ended on "
+                                                      f"{st['paid_until']:%m/%d/%Y}. Ask the motel owner to renew it.",
+                                            "code": "plan_expired"})
+        return result
+
     def get_user(self, validated_token):
         user = super().get_user(validated_token)
         if _stale(user, validated_token.get("sid")):

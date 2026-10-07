@@ -24,7 +24,7 @@ const blank = (room = '', date = todayISO()) => ({
   first_name: '', middle_name: '', last_name: '', address: '', city: '', state: '', zip_code: '',
   phone: '', car: '', license_plate: '', dl_number: '',
   do_not_rent: false,
-  cash: '', credit: '',
+  cash: '', credit: '', check: '',
   comments: '',
   adjustment: 0,
   // extra charges: null = use the motel's default (auto), a number = clerk typed it
@@ -186,12 +186,12 @@ export default function CheckIn() {
   const oldOwed = renewOf ? Math.max(r2(num(renewOf.balance)), 0) : 0
   const carried = editing ? carriedBefore : (carry ? oldOwed : 0)
   const total = roomCharge + charges + num(f.adjustment) + carried
-  const paidNow = editing ? paidBefore : num(f.cash) + num(f.credit)
+  const paidNow = editing ? paidBefore : num(f.cash) + num(f.credit) + num(f.check)
   const balance = total - paidNow
 
   // Put the rest on the card, including the card fee on that amount.
   function cardForBalance() {
-    const due = roomCharge + petFee + extraFee + lateFee + earlyFee + num(f.adjustment) + carried - num(f.cash)
+    const due = roomCharge + petFee + extraFee + lateFee + earlyFee + num(f.adjustment) + carried - num(f.cash) - num(f.check)
     if (due <= 0) return
     // auto fee: card amount c must cover due + c × pct  ->  c = due / (1 - pct)
     const credit = f.card_fee == null ? due / (1 - cardPct / 100) : due + num(f.card_fee)
@@ -200,8 +200,14 @@ export default function CheckIn() {
 
   // Put the rest in cash (card amount and its fee stay as they are).
   function cashForBalance() {
-    const due = roomCharge + charges + num(f.adjustment) + carried - num(f.credit)
+    const due = roomCharge + charges + num(f.adjustment) + carried - num(f.credit) - num(f.check)
     setF((p) => ({ ...p, cash: Math.max(r2(due), 0).toFixed(2) }))
+  }
+
+  // Put the rest in a check (cash and card stay as they are).
+  function checkForBalance() {
+    const due = roomCharge + charges + num(f.adjustment) + carried - num(f.credit) - num(f.cash)
+    setF((p) => ({ ...p, check: Math.max(r2(due), 0).toFixed(2) }))
   }
 
   // a fee input: shows the auto value until the clerk types one; ↺ goes back to auto
@@ -329,7 +335,7 @@ export default function CheckIn() {
     const payload = {
       photo_ids: editing ? [] : [dl.DL_FRONT?.id, dl.DL_BACK?.id].filter(Boolean),
       reuse_dl: !editing && Boolean(f.guest_id),
-      ...f, cash: f.cash || 0, credit: f.credit || 0, rate: f.rate || 0,
+      ...f, cash: f.cash || 0, credit: f.credit || 0, check: f.check || 0, rate: f.rate || 0,
       adjustment: num(f.adjustment).toFixed(2), allow_overlap: allowOverlap, room_status_ok: statusOk,
       pets: num(f.pets), extra_persons: extraPersons,
       renew_from: renewOf ? renewOf.id : null, carry_balance: Boolean(renewOf && carry && oldOwed > 0),
@@ -604,6 +610,10 @@ export default function CheckIn() {
                   <input type="number" step="0.01" min="0" value={f.credit} onChange={set('credit')} placeholder="0.00" />
                   <button type="button" className="link-btn" onClick={cardForBalance}>Put balance on card</button>
                 </label>
+                <label>Check
+                  <input type="number" step="0.01" min="0" value={f.check} onChange={set('check')} placeholder="0.00" />
+                  <button type="button" className="link-btn" onClick={checkForBalance}>Put balance in check</button>
+                </label>
               </>
             ) : (
               <div className="readout span-2">
@@ -628,7 +638,7 @@ export default function CheckIn() {
                 <button type="button" className="btn btn-sm ml" onClick={() => setF((p) => ({ ...p, adjustment: 0 }))}>Reset</button>
               </div>
             )}
-            <div className="readout">
+            <div className={editing ? 'readout' : 'readout span-4 clerk-line'}>
               <span>Clerk</span>
               <strong>{user.full_name}</strong>
             </div>

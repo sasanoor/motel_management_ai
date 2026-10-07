@@ -6,7 +6,7 @@ import AddStayModal from '../components/AddStayModal'
 import CheckoutModal from '../components/CheckoutModal'
 import { PhotoGallery } from '../components/Photos'
 import { Alert, BalanceCell, PageHead, PaymentModal, RefundModal, StatusPill } from '../components/ui'
-import { fmtDate, fmtDateTime, fmtTime, money, num, periodText, rateTypeInfo } from '../utils'
+import { fmtDate, methodInfo, fmtDateTime, fmtTime, money, num, periodText, rateTypeInfo } from '../utils'
 import { confirmBox } from '../confirm'
 
 function Row({ k, v }) {
@@ -58,9 +58,11 @@ export default function StayDetail() {
 
   async function remove() {
     const ok = await confirmBox({
-      title: 'Delete guest record?',
-      message: 'You can recover it from Deleted Guests.',
-      details: [['Guest', s.guest.name], ['Room', s.room_number], ['Stay', `${fmtDate(s.check_in_date)} to ${fmtDate(s.check_out_date)}`]],
+      title: 'Delete this check-in?',
+      message: `Use this for a check-in made by mistake.${s.status === 'CHECKED_IN' ? ` Room ${s.room_number} becomes free.` : ''}`
+        + `${num(s.amount_paid) !== 0 ? ` Its ${money(s.amount_paid)} in payments is taken out of the reports and cash drawer.` : ''}`
+        + ' You can recover it from Deleted Guests.',
+      details: [['Guest', s.guest.name], ['Room', s.room_number], ['Stay', `${fmtDate(s.check_in_date)} to ${fmtDate(s.check_out_date)}`], ['Paid', money(s.amount_paid)]],
     })
     if (!ok) return
     try {
@@ -167,7 +169,8 @@ export default function StayDetail() {
           <div><span>Total</span><strong>{money(s.total_amount)}</strong></div>
           <div><span>Cash</span><strong>{money(s.cash_paid)}</strong></div>
           <div><span>Credit</span><strong>{money(s.credit_paid)}</strong></div>
-          {num(s.refunded) > 0 && <div><span>Refunded (in cash / credit above)</span><strong>{money(s.refunded)}</strong></div>}
+          {num(s.check_paid) !== 0 && <div><span>Check</span><strong>{money(s.check_paid)}</strong></div>}
+          {num(s.refunded) > 0 && <div><span>Refunded (in the amounts above)</span><strong>{money(s.refunded)}</strong></div>}
           <div><span>Balance</span><strong><BalanceCell value={s.balance} /></strong></div>
         </div>
         {s.payments.length > 0 && (
@@ -179,8 +182,8 @@ export default function StayDetail() {
                   <tr key={p.id} className={p.kind === 'REFUND' ? 'refund-row' : ''}>
                     <td><strong>{fmtDate(p.business_date)}</strong></td>
                     <td className="tiny muted">{fmtDateTime(p.paid_at)}</td>
-                    <td>{p.kind === 'REFUND' ? 'Refund' : p.is_initial ? 'At check-in' : 'Balance payment'}</td>
-                    <td>{p.method === 'CASH' ? 'Cash' : 'Credit'}</td>
+                    <td>{p.kind === 'REFUND' ? 'Refund' : p.kind === 'STAYOVER' ? 'Stay-over payment' : p.is_initial ? 'At check-in' : 'Balance payment'}</td>
+                    <td>{methodInfo(p.method).label}</td>
                     <td className="num">{money(p.amount)}</td>
                     <td>{p.clerk_name}</td>
                     <td>{p.notes}</td>
