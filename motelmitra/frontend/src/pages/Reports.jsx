@@ -6,6 +6,7 @@ import CustomReports from '../components/CustomReports'
 import PaymentHistory from '../components/PaymentHistory'
 import { Alert, BalanceCell, Empty, PageHead, Stat } from '../components/ui'
 import { addDays, methodInfo, fmtDate, fmtDateTime, money, todayISO, rateTypeInfo, csvCell } from '../utils'
+import GridFilter from '../components/GridFilter'
 
 const TABS = [
   { key: 'checkins', label: 'Daily Check-ins', range: true },
@@ -134,7 +135,7 @@ export default function Reports() {
           <p className="muted tiny">Cash, credit and check are taken on the check-in day;  balance payments made later, counted against the original check-in date.</p>
           <div className="card no-pad">
             {!data.rows.length ? <Empty>No check-ins in this period.</Empty> : (
-              <div className="table-wrap">
+              <div className="table-wrap"><GridFilter />
                 <table className="table">
                   <thead><tr><th>Check-in</th><th>Room</th><th>Guest</th><th className="num">Guests</th><th className="num">Days</th><th className="num">Rate</th><th className="num">Fees</th><th className="num">Total</th><th className="num">Cash</th><th className="num">Credit</th><th className="num">Check</th><th className="num">Paid later</th><th className="num">Balance</th><th>Clerk</th></tr></thead>
                   <tbody>
@@ -182,6 +183,7 @@ export default function Reports() {
           </div>
           <div className="card no-pad">
             {!data.days.length ? <Empty>No payments in this period.</Empty> : (
+              <div className="table-wrap"><GridFilter />
               <table className="table">
                 <thead><tr><th>Date</th><th className="num">Payments</th><th className="num">Cash</th><th className="num">Credit</th><th className="num">Check</th><th className="num">Refunds</th><th className="num">Net total</th></tr></thead>
                 <tbody>
@@ -190,13 +192,14 @@ export default function Reports() {
                   ))}
                 </tbody>
               </table>
+              </div>
             )}
           </div>
           {data.payments.length > 0 && (
             <>
               <h2 className="section-title">Payment detail</h2>
               <div className="card no-pad">
-                <div className="table-wrap">
+                <div className="table-wrap"><GridFilter />
                   <table className="table">
                     <thead><tr><th>Paid at</th><th>Type</th><th>Method</th><th className="num">Amount</th><th>Guest</th><th>Room</th><th>Check-in date</th><th>Clerk</th></tr></thead>
                     <tbody>
@@ -224,6 +227,7 @@ export default function Reports() {
           </div>
           <div className="card no-pad">
             {!data.rows.length ? <Empty>No outstanding balances.</Empty> : (
+              <div className="table-wrap"><GridFilter />
               <table className="table">
                 <thead><tr><th>Check-in</th><th>Checkout</th><th>Room</th><th>Guest</th><th>Phone</th><th className="num">Total</th><th className="num">Paid</th><th className="num">Balance</th><th>Status</th></tr></thead>
                 <tbody>
@@ -238,6 +242,7 @@ export default function Reports() {
                   ))}
                 </tbody>
               </table>
+              </div>
             )}
           </div>
         </>
@@ -252,6 +257,7 @@ export default function Reports() {
           </div>
           <div className="grid-2">
             <div className="card no-pad">
+              <div className="table-wrap"><GridFilter />
               <table className="table">
                 <thead><tr><th>Date</th><th className="num">Occupied</th><th className="num">Available</th><th>Occupancy</th><th className="num">ADR</th></tr></thead>
                 <tbody>
@@ -264,8 +270,10 @@ export default function Reports() {
                   ))}
                 </tbody>
               </table>
+              </div>
             </div>
             <div className="card no-pad">
+              <div className="table-wrap"><GridFilter />
               <table className="table">
                 <thead><tr><th>Room type</th><th className="num">Rooms</th><th className="num">Nights sold</th><th>Occupancy</th></tr></thead>
                 <tbody>
@@ -277,6 +285,7 @@ export default function Reports() {
                   ))}
                 </tbody>
               </table>
+              </div>
             </div>
           </div>
         </>

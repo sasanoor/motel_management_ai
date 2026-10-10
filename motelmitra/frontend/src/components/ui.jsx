@@ -48,13 +48,14 @@ export function PageHead({ title, sub, children }) {
   )
 }
 
-export function Stat({ label, value, tone, onClick }) {
+export function Stat({ label, value, tone, onClick, sub }) {
   const cls = `stat ${tone ? 'stat-' + tone : ''} ${onClick ? 'stat-click' : ''}`
   if (onClick) {
     return (
       <button type="button" className={cls} onClick={onClick}>
         <div className="stat-value">{value}</div>
         <div className="stat-label">{label} <span className="stat-go">›</span></div>
+        {sub && <div className="stat-sub">{sub}</div>}
       </button>
     )
   }
@@ -62,6 +63,7 @@ export function Stat({ label, value, tone, onClick }) {
     <div className={cls}>
       <div className="stat-value">{value}</div>
       <div className="stat-label">{label}</div>
+      {sub && <div className="stat-sub">{sub}</div>}
     </div>
   )
 }

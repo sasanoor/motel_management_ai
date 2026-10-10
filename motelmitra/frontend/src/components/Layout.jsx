@@ -23,8 +23,8 @@ const NAV = {
     { to: '/dnr', label: 'DNR List', icon: '⛔' },
     { to: '/balances', label: 'Balance Payments', icon: '💵' },
     { to: '/problems', label: 'Room Problems', icon: '⚠️' },
+    { to: '/inventory', label: 'Inventory', icon: '📦' },
     { to: '/reports', label: 'Reports', icon: '📊' },
-    { to: '/directory', label: 'Guest Directory', icon: '📇' },
     { section: 'Setup' },
     { to: '/rooms', label: 'Rooms', icon: '🛏️' },
     { to: '/room-types', label: 'Room Types & Rates', icon: '🏷️' },
@@ -37,6 +37,7 @@ const NAV = {
     { to: '/', label: 'Housekeeping', icon: '🧹', end: true },
     { to: '/problems', label: 'Room Problems', icon: '⚠️' },
     { to: '/notes', label: 'Checkouts & Notes', icon: '📝' },
+    { to: '/inventory', label: 'Supplies', icon: '📦' },
   ],
   CLIENT_USER: [
     { to: '/', label: 'Home', icon: '🏠', end: true },
@@ -48,8 +49,8 @@ const NAV = {
     { to: '/dnr', label: 'DNR List', icon: '⛔' },
     { to: '/balances', label: 'Balance Payments', icon: '💵' },
     { to: '/problems', label: 'Room Problems', icon: '⚠️' },
+    { to: '/inventory', label: 'Inventory', icon: '📦' },
     { to: '/reports', label: 'Reports', icon: '📊' },
-    { to: '/directory', label: 'Guest Directory', icon: '📇' },
   ],
 }
 

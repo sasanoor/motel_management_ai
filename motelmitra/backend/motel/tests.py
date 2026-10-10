@@ -1440,3 +1440,111 @@ class CheckPaymentsTests(APITestCase):
         # Night Audit preview lists guests still due out with their names
         prev = self.client.get("/api/business-day/preview/").data["summary"]
         self.assertEqual(len(prev["still_due_out_guests"]), prev["still_due_out"])
+
+
+class V122FeatureTests(APITestCase):
+    def login(self, u, p):
+        r = self.client.post("/api/auth/login/", {"username": u, "password": p}, format="json")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+
+    def setUp(self):
+        seed()
+        self.today = timezone.localdate()
+        self.login("clerk", "clerk123")
+        self.free = [x for x in self.client.get("/api/rooms/board/").data if not x["occupied"]]
+
+    def test_weekend_rate(self):
+        from motel.models import RoomType, count_weekend_nights
+        room = self.free[0]
+        RoomType.objects.filter(rooms__id=room["id"]).update(weekend_rate=90)
+        # start on a Thursday: Thu, Fri, Sat, Sun nights -> 2 weekend nights
+        start = self.today + datetime.timedelta(days=(3 - self.today.weekday()) % 7)
+        s = self.client.post("/api/stays/", {"room": room["id"], "check_in_date": str(start), "check_in_time": "14:00",
+            "check_out_date": str(start + datetime.timedelta(days=4)), "check_out_time": "11:00", "num_guests": 1,
+            "rate": "60", "name": "Weekend Guest", "room_status_ok": True, "allow_overlap": True}, format="json")
+        self.assertEqual(s.status_code, 201, s.data)
+        st = self.client.get(f"/api/stays/{s.data['id']}/").data
+        self.assertEqual((st["weekend_rate"], st["weekend_nights"], st["total_amount"]), ("90.00", 2, "300.00"))
+        self.assertEqual(count_weekend_nights(start, 4), 2)
+
+    def test_extra_guests_and_payment_edit(self):
+        r = self.client.post("/api/stays/", {"room": self.free[0]["id"], "check_in_date": str(self.today), "check_in_time": "14:00",
+            "check_out_date": str(self.today + datetime.timedelta(days=1)), "check_out_time": "11:00", "num_guests": 2,
+            "rate": "70", "name": "Main Guest", "cash": "50", "room_status_ok": True,
+            "extra_guests": [{"name": "Priya Shah", "dl_number": "TX123"}, {"name": "", "dl_number": ""}]}, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        st = self.client.get(f"/api/stays/{r.data['id']}/").data
+        self.assertEqual([(g["name"], g["dl_number"]) for g in st["extra_guests"]], [("Priya Shah", "TX123")])
+        self.assertEqual(len(self.client.get("/api/stays/", {"q": "Priya"}).data), 1)
+        # edit: rename one, add one
+        g = st["extra_guests"][0]
+        r = self.client.patch(f"/api/stays/{st['id']}/", {"extra_guests": [{"id": g["id"], "name": "Priya S", "dl_number": "TX123"},
+                                                                          {"name": "Ravi Shah", "dl_number": "TX999"}]}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        st = self.client.get(f"/api/stays/{st['id']}/").data
+        self.assertEqual([g["name"] for g in st["extra_guests"]], ["Priya S", "Ravi Shah"])
+        # payment edit by the clerk who took it, same day
+        pay = st["payments"][0]
+        r = self.client.patch(f"/api/stays/{st['id']}/payments/{pay['id']}/", {"amount": "70", "method": "CHECK", "reason": "typo"}, format="json")
+        self.assertEqual((r.status_code, r.data["balance"], r.data["check_paid"]), (200, "0.00", "70.00"))
+        self.assertEqual(r.data["payment_changes"][0]["before"]["amount"], "50.00")
+        # another clerk-level user cannot change it; admin can delete it
+        from accounts.models import User
+        other = User.objects.create_user(username="clerk2", password="clerk2pw", role="CLIENT_USER", client=User.objects.get(username="clerk").client)
+        self.login("clerk2", "clerk2pw")
+        self.assertEqual(self.client.delete(f"/api/stays/{st['id']}/payments/{pay['id']}/").status_code, 403)
+        self.login("owner", "owner123")
+        r = self.client.delete(f"/api/stays/{st['id']}/payments/{pay['id']}/", {"reason": "duplicate"}, format="json")
+        self.assertEqual((r.status_code, r.data["balance"], r.data["payment_changes"][0]["action"]), (200, "70.00", "DELETE"))
+
+    def test_inventory(self):
+        r = self.client.post("/api/inventory/items/", {"name": "Towels", "unit": "pcs", "quantity": "20", "min_quantity": "10"}, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        item = r.data["id"]
+        r = self.client.post(f"/api/inventory/items/{item}/move/", {"kind": "OUT", "quantity": "12", "room": self.free[0]["id"]}, format="json")
+        self.assertEqual((r.status_code, r.data["quantity"], r.data["is_low"]), (200, "8.00", True))
+        self.assertEqual(self.client.get("/api/dashboard/").data["stats"]["low_stock"], 1)
+        self.assertEqual(self.client.post(f"/api/inventory/items/{item}/move/", {"kind": "OUT", "quantity": "50"}, format="json").status_code, 400)
+        self.assertEqual(self.client.post(f"/api/inventory/items/{item}/move/", {"kind": "ADJUST", "quantity": "5"}, format="json").status_code, 403)
+        r = self.client.post(f"/api/inventory/items/{item}/move/", {"kind": "IN", "quantity": "30", "cost": "45"}, format="json")
+        self.assertEqual((r.data["quantity"], r.data["is_low"]), ("38.00", False))
+        # maintenance can take items but not stock in
+        self.login("maint", "maint123")
+        self.assertEqual(self.client.post(f"/api/inventory/items/{item}/move/", {"kind": "OUT", "quantity": "2"}, format="json").status_code, 200)
+        self.assertEqual(self.client.post(f"/api/inventory/items/{item}/move/", {"kind": "IN", "quantity": "2"}, format="json").status_code, 403)
+        moves = self.client.get("/api/inventory/moves/", {"item": item}).data
+        self.assertEqual([m["kind"] for m in moves][:2], ["OUT", "IN"])
+        self.assertEqual(len(moves), 4)
+        # removed, then added again with the same name: the item comes back with its history
+        self.login("clerk", "clerk123")
+        self.assertEqual(self.client.delete(f"/api/inventory/items/{item}/").status_code, 204)
+        r = self.client.post("/api/inventory/items/", {"name": "towels", "unit": "pcs", "quantity": "40"}, format="json")
+        self.assertEqual((r.status_code, r.data["id"], r.data["quantity"]), (201, item, "40.00"), r.data)
+        self.assertEqual(len(self.client.get("/api/inventory/moves/", {"item": item}).data), 5)
+
+    def test_today_report_counts_room_rented_twice(self):
+        from motel.models import Stay
+        self.login("clerk", "clerk123")
+        day = timezone.localdate()
+        before = self.client.get("/api/reports/today/", {"date": str(day)}).data["summary"]
+        room = self.free[0]["id"]
+        # guest 1: in and out on the same day
+        a = self.client.post("/api/stays/", {"room": room, "first_name": "Day", "last_name": "Guest",
+                                             "check_in_date": str(day), "check_in_time": "08:00",
+                                             "check_out_date": str(day), "check_out_time": "15:00"}, format="json")
+        self.assertEqual(a.status_code, 201, a.data)
+        Stay.objects.filter(pk=a.data["id"]).update(status=Stay.CHECKED_OUT, checked_out_at=timezone.now())
+        # guest 2: same room, tonight
+        b = self.client.post("/api/stays/", {"room": room, "first_name": "Night", "last_name": "Guest",
+                                             "check_in_date": str(day), "check_in_time": "16:00",
+                                             "check_out_date": str(day + datetime.timedelta(days=1)),
+                                             "check_out_time": "11:00", "allow_overlap": True}, format="json")
+        self.assertEqual(b.status_code, 201, b.data)
+        now = self.client.get("/api/reports/today/", {"date": str(day)}).data["summary"]
+        self.assertEqual(now["occupied"], before["occupied"] + 2)   # one room rented two times counts 2
+        self.assertEqual(now["available"], before["available"] - 1)  # but only one room is taken tonight
+        dash = self.client.get("/api/dashboard/", {"date": str(day)}).data["stats"]
+        self.assertEqual(dash["occupied"], now["occupied"])
+        occ = self.client.get("/api/reports/occupancy/", {"start": str(day), "end": str(day)}).data["days"][0]
+        self.assertEqual(occ["occupied"], now["occupied"])
+

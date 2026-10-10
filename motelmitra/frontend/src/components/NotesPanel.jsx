@@ -4,6 +4,7 @@ import { useAuth } from '../auth'
 import { fmtDateTime } from '../utils'
 import { Alert, Empty } from './ui'
 import { confirmBox } from '../confirm'
+import GridFilter from './GridFilter'
 
 /** Front desk writes notes for maintenance for a date (Home screen tab). */
 export default function NotesPanel({ date, rooms, onCount }) {
@@ -68,6 +69,7 @@ export default function NotesPanel({ date, rooms, onCount }) {
       </form>
       <Alert>{err}</Alert>
       {!notes.length ? <Empty>No maintenance notes for this date.</Empty> : (
+        <div className="table-wrap"><GridFilter />
         <table className="table">
           <thead><tr><th>Room</th><th>Note</th><th>By</th><th>Time</th><th></th></tr></thead>
           <tbody>
@@ -98,6 +100,7 @@ export default function NotesPanel({ date, rooms, onCount }) {
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   )

@@ -3,6 +3,7 @@ import api, { errorText } from '../api'
 import { Alert, Empty, PageHead } from '../components/ui'
 import { fmtDate, fmtDateTime, money, num } from '../utils'
 import { confirmBox } from '../confirm'
+import GridFilter from '../components/GridFilter'
 
 /**
  * Admin only. Everything deleted, in one place:
@@ -54,7 +55,7 @@ export default function Deleted() {
       <div className="card no-pad">
         {guests && !guests.length && <Empty>No deleted guests.</Empty>}
         {guests?.length > 0 && (
-          <div className="table-wrap">
+          <div className="table-wrap"><GridFilter />
             <table className="table">
               <thead>
                 <tr><th>Guest</th><th>Phone</th><th className="num">Stays</th><th className="num">Balance</th><th>Deleted</th><th>By</th><th></th></tr>
@@ -81,7 +82,7 @@ export default function Deleted() {
       <div className="card no-pad">
         {stays && !stays.length && <Empty>No deleted check-ins.</Empty>}
         {stays?.length > 0 && (
-          <div className="table-wrap">
+          <div className="table-wrap"><GridFilter />
             <table className="table">
               <thead>
                 <tr><th>Room</th><th>Guest</th><th>Check-in</th><th>Checkout</th><th className="num">Total</th><th>Deleted</th><th>By</th><th></th></tr>

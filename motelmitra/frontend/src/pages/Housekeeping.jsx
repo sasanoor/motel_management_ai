@@ -5,6 +5,7 @@ import { useAuth } from '../auth'
 import ProblemForm from '../components/ProblemForm'
 import { Alert, Empty, HkPill, IssueBadge, Modal, PageHead, Stat } from '../components/ui'
 import { fmtDate, fmtDateTime } from '../utils'
+import GridFilter from '../components/GridFilter'
 
 const toClean = (r) => r.occupancy === 'vacant' && (r.hk_status === 'DIRTY' || r.hk_status === 'CLEANING')
 const notOut = (r) => r.occupancy === 'due_out'
@@ -160,6 +161,12 @@ export default function Housekeeping() {
       </PageHead>
       <Alert>{err}</Alert>
       <Alert kind="success">{msg}</Alert>
+      {s?.low_stock > 0 && (
+        <div className="alert low-stock-banner">
+          <strong>Low stock:</strong> {s.low_stock} suppl{s.low_stock > 1 ? 'ies are' : 'y is'} running out. Tell the front desk.
+          <Link to="/inventory">See supplies →</Link>
+        </div>
+      )}
 
       {s && (
         <div className="stats">
@@ -199,7 +206,7 @@ export default function Housekeeping() {
         <>
           <h2 className="section-title">Recent room status changes</h2>
           <div className="card no-pad">
-            <div className="table-wrap">
+            <div className="table-wrap"><GridFilter />
               <table className="table hk-log">
                 <thead><tr><th>When</th><th>Room</th><th>Change</th><th>Note</th><th>By</th></tr></thead>
                 <tbody>

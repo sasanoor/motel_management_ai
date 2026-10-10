@@ -161,3 +161,15 @@ export const METHOD = {
   CHECK: { label: 'Check', card: 'Check', pill: 'pay-check', amt: 'amt-check' },
 }
 export const methodInfo = (m) => METHOD[m] || METHOD.CREDIT
+
+// Friday and Saturday nights get the weekend rate (daily stays)
+export function weekendNights(startIso, nights) {
+  if (!startIso) return 0
+  const [y, m, d] = startIso.slice(0, 10).split('-').map(Number)
+  let n = 0
+  for (let i = 0; i < Math.max(Number(nights) || 0, 0); i++) {
+    const day = new Date(y, m - 1, d + i).getDay()   // 5 = Friday, 6 = Saturday
+    if (day === 5 || day === 6) n += 1
+  }
+  return n
+}

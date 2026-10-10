@@ -6,6 +6,7 @@ import { Alert, Empty, Modal, PageHead, Stat } from '../components/ui'
 import CheckoutModal from '../components/CheckoutModal'
 import { addDays, fmtDateTime, fmtDay, fmtTime, money, num } from '../utils'
 import { confirmBox } from '../confirm'
+import GridFilter from '../components/GridFilter'
 
 /**
  * Night Audit: close the business day. The next day starts right away, so new check-ins
@@ -156,7 +157,7 @@ export default function NightAudit() {
       <h2 className="section-title">Closed days</h2>
       <div className="card no-pad">
         {!history.length ? <Empty>No days closed yet.</Empty> : (
-          <div className="table-wrap">
+          <div className="table-wrap"><GridFilter />
             <table className="table">
               <thead><tr><th>Business day</th><th>Closed at</th><th>Closed by</th><th className="num">Check-ins</th><th className="num">Cash</th><th className="num">Credit</th><th className="num">Check</th><th className="num">Refunds</th><th className="num">Collected</th><th></th></tr></thead>
               <tbody>

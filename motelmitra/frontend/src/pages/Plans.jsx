@@ -3,6 +3,7 @@ import api, { errorText } from '../api'
 import { confirmBox } from '../confirm'
 import { Alert, Empty, Modal, PageHead } from '../components/ui'
 import { fmtDate, money, todayISO } from '../utils'
+import GridFilter from '../components/GridFilter'
 
 /* MotelMitra subscriptions.
  * Super admin: Plans (name, months, price) and, on Clients, a plan per motel.
@@ -79,7 +80,7 @@ function PlanCard({ plan }) {
 function History({ rows, onDelete }) {
   if (!rows?.length) return null
   return (
-    <div className="table-wrap">
+    <div className="table-wrap"><GridFilter />
       <table className="table">
         <thead><tr><th>Plan</th><th>From</th><th>To</th><th className="num">Price</th><th>Notes</th><th>Added by</th>{onDelete && <th></th>}</tr></thead>
         <tbody>

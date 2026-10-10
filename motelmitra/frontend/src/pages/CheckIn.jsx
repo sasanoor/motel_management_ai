@@ -3,12 +3,13 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import api, { errorText } from '../api'
 import { useAuth } from '../auth'
 import { PhotoUploader } from '../components/Photos'
+import PaymentList from '../components/PaymentList'
 import RoomPicker from '../components/RoomPicker'
 import { confirmBox } from '../confirm'
 import { Alert, Modal, PageHead } from '../components/ui'
 import {
   RATE_TYPES, addDays, addMonths, daysBetween, fmtDate, money, monthsBetween, nowTime, num, periodText,
-  fullName, nameParts, rateFor, rateTypeInfo, todayISO,
+  fullName, nameParts, rateFor, rateTypeInfo, todayISO, weekendNights,
 } from '../utils'
 
 const blank = (room = '', date = todayISO()) => ({
@@ -19,6 +20,7 @@ const blank = (room = '', date = todayISO()) => ({
   check_out_time: '11:00',
   num_guests: 1,
   rate_type: 'DAILY',
+  weekend_rate: '',
   periods: 1,          // weeks or months when renting weekly / monthly
   rate: '',
   first_name: '', middle_name: '', last_name: '', address: '', city: '', state: '', zip_code: '',
@@ -58,6 +60,7 @@ export default function CheckIn() {
   const [busy, setBusy] = useState(false)
   const [originalRoom, setOriginalRoom] = useState(null)
   const [paidBefore, setPaidBefore] = useState(0)      // edit mode: payments already taken
+  const [stayNow, setStayNow] = useState(null)          // edit mode: the saved stay (payments list)
   const [balanceText, setBalanceText] = useState(null) // text while the clerk types a balance
   const [fees, setFees] = useState(null)               // motel's Charges & Fees settings
   const renewId = !editing ? params.get('renew') : null  // "Check out & check in again"
@@ -67,13 +70,17 @@ export default function CheckIn() {
   // DL photos: { DL_FRONT, DL_BACK } taken on this form; reused = returning guest's last DL on file
   const [dl, setDl] = useState({ DL_FRONT: null, DL_BACK: null })
   const [reused, setReused] = useState({})
+  // extra guests on the same check-in: [{ key, id?, name, dl_number, dl: { DL_FRONT, DL_BACK } }]
+  const [extras, setExtras] = useState([])
+  const addExtra = () => setExtras((x) => [...x, { key: `n${Date.now()}`, name: '', dl_number: '', dl: { DL_FRONT: null, DL_BACK: null } }])
+  const setExtra = (key, patch) => setExtras((x) => x.map((g) => (g.key === key ? { ...g, ...patch } : g)))
 
   // edit: the stay's own DL photos
   useEffect(() => {
     if (!editing) return
     api.get('/photos/', { params: { stay: id, kind: 'DL' } }).then(({ data }) => {
       const out = { DL_FRONT: null, DL_BACK: null }
-      data.forEach((p) => { out[p.kind] = p })
+      data.filter((p) => !p.extra_guest).forEach((p) => { out[p.kind] = p })
       setDl(out)
     }).catch(() => {})
   }, [editing, id])
@@ -111,13 +118,19 @@ export default function CheckIn() {
     api.get(`/stays/${id}/`).then(({ data: s }) => {
       setOriginalRoom(s.room)
       setPaidBefore(num(s.amount_paid))
+      setStayNow(s)
+      setExtras((s.extra_guests || []).map((g) => {
+        const dlx = { DL_FRONT: null, DL_BACK: null }
+        g.photos.forEach((ph) => { dlx[ph.kind] = { ...ph, kind_label: `${ph.kind === 'DL_FRONT' ? 'DL front' : 'DL back'} · ${g.name}` } })
+        return { key: `e${g.id}`, id: g.id, name: g.name, dl_number: g.dl_number, dl: dlx }
+      }))
       setCarriedBefore(Math.max(num(s.balance_carried), 0))
       setF({
         ...blank(),
         room: s.room,
         check_in_date: s.check_in_date, check_in_time: s.check_in_time.slice(0, 5),
         check_out_date: s.check_out_date, check_out_time: s.check_out_time.slice(0, 5),
-        num_guests: s.num_guests, rate: s.rate, comments: s.comments, adjustment: num(s.adjustment),
+        num_guests: s.num_guests, rate: s.rate, weekend_rate: num(s.weekend_rate) ? s.weekend_rate : '', comments: s.comments, adjustment: num(s.adjustment),
         rate_type: s.rate_type || 'DAILY', periods: s.periods || 1,
         pets: s.pets || 0, extra_persons: s.extra_persons ?? 0, pet_fee: num(s.pet_fee),
         extra_person_fee: num(s.extra_person_fee), card_fee: num(s.card_fee), late_fee: num(s.late_fee), early_checkin_fee: num(s.early_checkin_fee),
@@ -142,7 +155,7 @@ export default function CheckIn() {
       setF({
         ...blank(String(s.room), start),
         check_out_date: end, check_out_time: s.check_out_time.slice(0, 5),
-        rate_type: type, periods: n, rate: s.rate, num_guests: s.num_guests, pets: s.pets || 0,
+        rate_type: type, periods: n, rate: s.rate, weekend_rate: num(s.weekend_rate) ? s.weekend_rate : '', num_guests: s.num_guests, pets: s.pets || 0,
         ...nameParts(s.guest), address: s.guest.address, city: s.guest.city, state: s.guest.state,
         zip_code: s.guest.zip_code, phone: s.guest.phone, car: s.guest.car,
         license_plate: s.guest.license_plate, dl_number: s.guest.dl_number || '', do_not_rent: s.guest.do_not_rent, guest_id: s.guest.id,
@@ -167,7 +180,9 @@ export default function CheckIn() {
   const days = Math.max(daysBetween(f.check_in_date, f.check_out_date), 1)
   const rt = rateTypeInfo(f.rate_type)
   const periods = f.rate_type === 'DAILY' ? days : Math.max(num(f.periods), 1)
-  const roomCharge = num(f.rate) * periods
+  // daily stays: Friday and Saturday nights at the weekend rate (blank = same as the daily rate)
+  const wkNights = f.rate_type === 'DAILY' && num(f.weekend_rate) > 0 ? weekendNights(f.check_in_date, days) : 0
+  const roomCharge = num(f.rate) * (periods - wkNights) + num(f.weekend_rate) * wkNights
   const selectedRoom = board.find((x) => String(x.id) === String(f.room))
 
   // ---- extra charges (pets, extra persons, card fee)
@@ -225,7 +240,10 @@ export default function CheckIn() {
   }
 
   function pickRoom(r) {
-    setF((p) => ({ ...p, room: String(r.id), rate: !editing || !p.rate ? rateFor(r, p.rate_type) : p.rate }))
+    setF((p) => ({
+      ...p, room: String(r.id), rate: !editing || !p.rate ? rateFor(r, p.rate_type) : p.rate,
+      weekend_rate: !editing ? (num(r.weekend_rate) ? Number(r.weekend_rate).toFixed(2) : '') : p.weekend_rate,
+    }))
   }
 
   // checkout date for a count of nights / weeks / months
@@ -336,6 +354,9 @@ export default function CheckIn() {
       photo_ids: editing ? [] : [dl.DL_FRONT?.id, dl.DL_BACK?.id].filter(Boolean),
       reuse_dl: !editing && Boolean(f.guest_id),
       ...f, cash: f.cash || 0, credit: f.credit || 0, check: f.check || 0, rate: f.rate || 0,
+      weekend_rate: f.rate_type === 'DAILY' ? num(f.weekend_rate).toFixed(2) : '0.00',
+      extra_guests: extras.map((g) => ({ id: g.id, name: g.name, dl_number: g.dl_number,
+        photo_ids: [g.dl.DL_FRONT?.id, g.dl.DL_BACK?.id].filter(Boolean) })),
       adjustment: num(f.adjustment).toFixed(2), allow_overlap: allowOverlap, room_status_ok: statusOk,
       pets: num(f.pets), extra_persons: extraPersons,
       renew_from: renewOf ? renewOf.id : null, carry_balance: Boolean(renewOf && carry && oldOwed > 0),
@@ -520,6 +541,29 @@ export default function CheckIn() {
                 stay={editing ? id : undefined} reused={editing ? undefined : reused}
                 title={`DL photos${reused.DL_FRONT || reused.DL_BACK ? ' · last DL on file is used unless you take a new one' : ''}`} />
             </div>
+            <div className="span-4 extra-guests">
+              <div className="extra-head">
+                <span className="subhead">Extra guests {extras.length > 0 && `(${extras.length})`}</span>
+                <button type="button" className="btn btn-sm" onClick={addExtra}>+ Add extra guest</button>
+              </div>
+              {extras.map((g, i) => (
+                <div key={g.key} className="extra-row">
+                  <div className="extra-fields">
+                    <span className="extra-no">{i + 1}</span>
+                    <label>Name <span className="req">*</span>
+                      <input value={g.name} onChange={(e) => setExtra(g.key, { name: e.target.value })} placeholder="Full name" />
+                    </label>
+                    <label>DL number
+                      <input value={g.dl_number} onChange={(e) => setExtra(g.key, { dl_number: e.target.value })} placeholder="Driving licence" />
+                    </label>
+                    <button type="button" className="btn btn-sm btn-danger-outline" onClick={() => setExtras((x) => x.filter((y) => y.key !== g.key))}>Remove</button>
+                  </div>
+                  <PhotoUploader mode="DL" value={g.dl} title={`DL photos · ${g.name || `extra guest ${i + 1}`}`}
+                    onAdd={(ph) => setExtras((x) => x.map((y) => (y.key === g.key ? { ...y, dl: { ...y.dl, [ph.kind]: ph } } : y)))}
+                    onRemove={(ph) => { api.delete(`/photos/${ph.id}/`).catch(() => {}); setExtras((x) => x.map((y) => (y.key === g.key ? { ...y, dl: { ...y.dl, [ph.kind]: null } } : y))) }} />
+                </div>
+              ))}
+            </div>
           </div>
         </section>
 
@@ -529,11 +573,20 @@ export default function CheckIn() {
             <label>Rate per {rt.unit}
               <input type="number" step="0.01" min="0" value={f.rate} onChange={set('rate')} required />
             </label>
+            {f.rate_type === 'DAILY' && (
+              <label>Weekend rate (Fri, Sat)
+                <input type="number" step="0.01" min="0" value={f.weekend_rate ?? ''} onChange={set('weekend_rate')} placeholder="Same as daily" />
+                <span className="hint">Friday and Saturday nights · set per room type by admin</span>
+              </label>
+            )}
             <div className="readout">
               <span>Room charge ({periodText(periods, f.rate_type)}{f.rate_type !== 'DAILY' ? `, ${days} nights` : ''})</span>
               <strong>{money(roomCharge)}</strong>
+              {wkNights > 0 && (
+                <span className="tiny muted">{periods - wkNights} × {money(f.rate)} + {wkNights} weekend × {money(f.weekend_rate)}</span>
+              )}
             </div>
-            <div className="readout span-2 total-readout">
+            <div className={`readout ${f.rate_type === 'DAILY' ? '' : 'span-2'} total-readout`}>
               <span>Total</span>
               <strong>{money(total)}</strong>
               <span className="tiny muted">
@@ -619,6 +672,12 @@ export default function CheckIn() {
               <div className="readout span-2">
                 <span>Paid so far</span>
                 <strong>{money(paidBefore)} <span className="tiny muted">(add payments on the guest page)</span></strong>
+              </div>
+            )}
+            {editing && stayNow?.payments?.length > 0 && (
+              <div className="span-4 edit-payments">
+                <span className="field-label">Payments taken · fix a wrong amount or method here</span>
+                <PaymentList stay={stayNow} onChanged={(d) => { setStayNow(d); setPaidBefore(num(d.amount_paid)) }} />
               </div>
             )}
             <label>Balance

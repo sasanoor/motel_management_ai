@@ -10,6 +10,7 @@ router = DefaultRouter()
 router.register("clients", ClientViewSet, basename="client")
 router.register("users", UserViewSet, basename="user")
 router.register("plans", PlanViewSet, basename="plan")
+router.register("inventory/items", mv.InventoryItemViewSet, basename="inventory-item")
 router.register("room-types", mv.RoomTypeViewSet, basename="room-type")
 router.register("rooms", mv.RoomViewSet, basename="room")
 router.register("guests", mv.GuestViewSet, basename="guest")
@@ -29,6 +30,7 @@ urlpatterns = [
     path("api/version/", version),
     path("api/settings/", motel_settings),
     path("api/dashboard/", mv.dashboard),
+    path("api/inventory/moves/", mv.inventory_moves),
     path("api/business-day/", mv.business_day),
     path("api/photo-sessions/", mv.photo_session_create),
     path("api/photo-sessions/<str:token>/", mv.photo_session_status),

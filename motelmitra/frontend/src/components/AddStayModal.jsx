@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import api, { errorText } from '../api'
-import { addDays, addMonths, daysBetween, fmtDate, money, num, RATE_TYPES } from '../utils'
+import { addDays, addMonths, daysBetween, fmtDate, money, num, RATE_TYPES, weekendNights } from '../utils'
 import usePayment from '../usePayment'
 import PaymentCollected from './PaymentCollected'
 import { Alert, Modal } from './ui'
@@ -30,7 +30,11 @@ export default function AddStayModal({ stay, onClose, onSaved }) {
   const newOut = type === 'WEEKLY' ? addDays(stay.check_out_date, 7 * count)
     : type === 'MONTHLY' ? addMonths(stay.check_out_date, count) : addDays(stay.check_out_date, count)
   const addedNights = daysBetween(stay.check_out_date, newOut)
-  const roomAdd = r2(num(rate) * count)
+  // same terms on a daily stay with a weekend rate: Friday and Saturday nights at the weekend rate
+  const wkRate = num(stay.weekend_rate)
+  const wkAdd = type === 'DAILY' && own === 'DAILY' && num(rate) === num(stay.rate) && wkRate > 0
+    ? weekendNights(stay.check_out_date, count) : 0
+  const roomAdd = r2(num(rate) * (count - wkAdd) + wkRate * wkAdd)
   // Extra charges for the added stay, same boxes as check-in. Extra person fee is automatic
   // (same nightly amount as the stay) until the clerk types one.
   const [fees, setFees] = useState(null)
@@ -101,7 +105,7 @@ export default function AddStayModal({ stay, onClose, onSaved }) {
           <div className="readout">
             <span>Room charge added</span>
             <strong>{money(roomAdd)}</strong>
-            <span className="tiny muted">{count} × {money(rate)}</span>
+            <span className="tiny muted">{wkAdd > 0 ? `${count - wkAdd} × ${money(rate)} + ${wkAdd} weekend × ${money(wkRate)}` : `${count} × ${money(rate)}`}</span>
           </div>
           <div className="readout total-readout">
             <span>New total</span>

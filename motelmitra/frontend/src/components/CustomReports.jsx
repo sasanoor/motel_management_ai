@@ -4,6 +4,7 @@ import api, { errorText } from '../api'
 import { confirmBox } from '../confirm'
 import { addDays, fmtDate, money, num, todayISO, csvCell } from '../utils'
 import { Alert, Empty } from './ui'
+import GridFilter from './GridFilter'
 
 // Reports -> Custom reports. Pick a source, columns, filters, group by and sort; run, save, export, print.
 
@@ -327,7 +328,7 @@ export default function CustomReports() {
             </p>
             <div className="card no-pad">
               {!result.rows.length ? <Empty>No rows for these settings.</Empty> : (
-                <div className="table-wrap">
+                <div className="table-wrap"><GridFilter />
                   <table className="table">
                     <thead><tr>{result.columns.map((c) => <th key={c.key} className={c.type === 'money' || c.type === 'int' ? 'num' : ''}>{c.label}</th>)}</tr></thead>
                     <tbody>

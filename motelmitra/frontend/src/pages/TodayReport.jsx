@@ -9,6 +9,7 @@ import RoomSheet from '../components/RoomSheet'
 import { Alert, Empty, HkPill, PageHead, PaymentModal, Stat } from '../components/ui'
 import { addDays, methodInfo, fmtDate, fmtDateTime, fmtTime, money, num, periodText, todayISO, rateTypeInfo } from '../utils'
 import { confirmBox } from '../confirm'
+import GridFilter from '../components/GridFilter'
 
 /** End-of-day / shift handover report for the front desk. */
 export default function TodayReport() {
@@ -106,7 +107,7 @@ export default function TodayReport() {
 
           {d.expenses.length > 0 && (
             <div className="card no-pad expense-card">
-              <div className="table-wrap">
+              <div className="table-wrap"><GridFilter />
                 <table className="table">
                   <thead><tr><th>Time</th><th>Description</th><th>Paid by</th><th className="num">Amount</th><th>Clerk</th><th className="no-print"></th></tr></thead>
                   <tbody>
@@ -139,7 +140,7 @@ export default function TodayReport() {
             <Stat label="Check-ins" value={d.summary.checkins} />
             <Stat label="Checked out" value={d.summary.checkouts_done} />
             <Stat label="Checkouts pending" value={d.summary.checkouts_due} tone={d.summary.checkouts_due ? 'warn' : ''} />
-            <Stat label="Occupied tonight" value={`${d.summary.occupied} / ${d.summary.total_rooms}`} />
+            <Stat label="Occupied" value={`${d.summary.rented ?? d.summary.occupied} / ${d.summary.total_rooms}`} />
             <Stat label="Available" value={d.summary.available} tone="good" />
             <Stat label="Occupancy" value={`${d.summary.occupancy_pct}%`} />
           </div>
@@ -181,6 +182,7 @@ export default function TodayReport() {
             <>
               <h2 className="section-title">Collections by clerk</h2>
               <div className="card no-pad">
+                <div className="table-wrap"><GridFilter />
                 <table className="table">
                   <thead><tr><th>Clerk</th><th className="num">Payments</th><th className="num">Cash</th><th className="num">Credit</th><th className="num">Check</th><th className="num">Total</th></tr></thead>
                   <tbody>
@@ -192,6 +194,7 @@ export default function TodayReport() {
                     <tr><td>Total</td><td className="num">{d.payments.length}</td><td className="num">{money(d.money.cash)}</td><td className="num">{money(d.money.credit)}</td><td className="num">{money(d.money.check)}</td><td className="num">{money(d.money.collected)}</td></tr>
                   </tfoot>
                 </table>
+                </div>
               </div>
             </>
           )}
@@ -262,7 +265,7 @@ export default function TodayReport() {
           <h2 className="section-title">Payments received ({d.payments.length})</h2>
           <div className="card no-pad">
             {!d.payments.length ? <Empty>No payments.</Empty> : (
-              <div className="table-wrap">
+              <div className="table-wrap"><GridFilter />
                 <table className="table">
                   <thead><tr><th>Time</th><th>Type</th><th>Method</th><th className="num">Amount</th><th>Guest</th><th>Room</th><th>Check-in date</th><th>Clerk</th></tr></thead>
                   <tbody>

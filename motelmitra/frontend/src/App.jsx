@@ -7,10 +7,11 @@ import Deleted from './pages/Deleted'
 import Dnr from './pages/Dnr'
 import Login from './pages/Login'
 import Maintenance from './pages/Maintenance'
+import Inventory from './pages/Inventory'
 import Housekeeping from './pages/Housekeeping'
 import Problems from './pages/Problems'
 import Reports from './pages/Reports'
-import { ChargesSettings, Clients, Directory, RoomTypes, Rooms, Users } from './pages/Setup'
+import { ChargesSettings, Clients, RoomTypes, Rooms, Users } from './pages/Setup'
 import StayDetail from './pages/StayDetail'
 import TodayReport from './pages/TodayReport'
 import NightAudit from './pages/NightAudit'
@@ -48,13 +49,14 @@ export default function App() {
         <Route index element={<Guard allow={[...STAFF, 'MAINTENANCE']}><Home /></Guard>} />
         <Route path="housekeeping" element={<Guard allow={[...STAFF, 'MAINTENANCE']}><Housekeeping /></Guard>} />
         <Route path="problems" element={<Guard allow={[...STAFF, 'MAINTENANCE']}><Problems /></Guard>} />
+        <Route path="inventory" element={<Guard allow={[...STAFF, 'MAINTENANCE']}><Inventory /></Guard>} />
         <Route path="notes" element={<Guard allow={[...STAFF, 'MAINTENANCE']}><Maintenance /></Guard>} />
         <Route path="check-in" element={<Guard allow={STAFF}><CheckIn /></Guard>} />
         <Route path="stays" element={<Guard allow={STAFF}><Stays /></Guard>} />
         <Route path="stays/:id" element={<Guard allow={STAFF}><StayDetail /></Guard>} />
         <Route path="stays/:id/edit" element={<Guard allow={STAFF}><CheckIn /></Guard>} />
         <Route path="balances" element={<Guard allow={STAFF}><Stays balancesOnly /></Guard>} />
-        <Route path="directory" element={<Guard allow={STAFF}><Directory /></Guard>} />
+        <Route path="directory" element={<Navigate to="/stays?tab=people" replace />} />
         <Route path="dnr" element={<Guard allow={STAFF}><Dnr /></Guard>} />
         <Route path="today" element={<Guard allow={STAFF}><TodayReport /></Guard>} />
         <Route path="night-audit" element={<Guard allow={STAFF}><NightAudit /></Guard>} />

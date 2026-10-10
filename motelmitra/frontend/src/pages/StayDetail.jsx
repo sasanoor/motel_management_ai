@@ -4,10 +4,11 @@ import api, { errorText } from '../api'
 import { useAuth } from '../auth'
 import AddStayModal from '../components/AddStayModal'
 import CheckoutModal from '../components/CheckoutModal'
-import { PhotoGallery } from '../components/Photos'
+import { AuthImage, PhotoGallery } from '../components/Photos'
 import { Alert, BalanceCell, PageHead, PaymentModal, RefundModal, StatusPill } from '../components/ui'
-import { fmtDate, methodInfo, fmtDateTime, fmtTime, money, num, periodText, rateTypeInfo } from '../utils'
+import { fmtDate, fmtDateTime, fmtTime, money, num, periodText, rateTypeInfo } from '../utils'
 import { confirmBox } from '../confirm'
+import PaymentList from '../components/PaymentList'
 
 function Row({ k, v }) {
   return <div className="kv"><span>{k}</span><strong>{v || '—'}</strong></div>
@@ -123,8 +124,8 @@ export default function StayDetail() {
           <Row k="No. of days" v={s.rate_type === 'DAILY' ? s.num_days : `${s.num_days} (${periodText(s.periods, s.rate_type)})`} />
           <Row k="No. of guests" v={s.num_guests} />
           <Row k="Clerk" v={s.clerk_name} />
-          {s.renewed_from && <Row k="Continued from" v={<Link to={`/stays/${s.renewed_from}`}>Previous stay #{s.renewed_from}</Link>} />}
-          {s.renewed_to && <Row k="Continued in" v={<Link to={`/stays/${s.renewed_to}`}>Next stay #{s.renewed_to}</Link>} />}
+          {s.renewed_from_info && <Row k="Continued from" v={<StayLink st={s.renewed_from_info} />} />}
+          {s.renewed_to_info && <Row k="Continued in" v={<StayLink st={s.renewed_to_info} />} />}
           {s.checked_out_at && <Row k="Checked out at" v={fmtDateTime(s.checked_out_at)} />}
           <Row k="Comments" v={s.comments} />
         </section>
@@ -140,6 +141,28 @@ export default function StayDetail() {
         </section>
       </div>
 
+      {s.extra_guests?.length > 0 && (
+        <section className="card">
+          <h2>Extra guests ({s.extra_guests.length})</h2>
+          <div className="table-wrap">
+            <table className="table">
+              <thead><tr><th>Name</th><th>DL number</th><th>DL photos</th></tr></thead>
+              <tbody>
+                {s.extra_guests.map((x) => (
+                  <tr key={x.id}>
+                    <td><strong>{x.name}</strong></td>
+                    <td>{x.dl_number || '—'}</td>
+                    <td>{x.photos.length ? <span className="extra-thumbs">{x.photos.map((ph) => (
+                      <AuthImage key={ph.id} photo={{ ...ph, kind_label: `${x.name} · DL ${ph.kind === 'DL_BACK' ? 'back' : 'front'}` }} />
+                    ))}</span> : <span className="muted">—</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
       <section className="card">
         <h2>Photos <span className="tiny muted">· DL photos: Edit to replace · damage photos: added at checkout</span></h2>
         <PhotoGallery photos={photos} onDelete={deletePhoto} />
@@ -151,7 +174,10 @@ export default function StayDetail() {
           {s.early ? (
             <div><span>Room charge ({s.num_days} night{s.num_days > 1 ? 's' : ''} used)</span><strong>{money(s.room_charge)}</strong></div>
           ) : (
-            <div><span>Rate ({rateTypeInfo(s.rate_type).label.toLowerCase()})</span><strong>{money(s.rate)} × {periodText(s.periods, s.rate_type)}</strong></div>
+            num(s.weekend_nights) > 0 && num(s.weekend_rate) > 0 ? <>
+              <div><span>Weekday rate</span><strong>{money(s.rate)} × {s.periods - s.weekend_nights} night{s.periods - s.weekend_nights === 1 ? '' : 's'}</strong></div>
+              <div><span>Weekend rate (Fri, Sat)</span><strong>{money(s.weekend_rate)} × {s.weekend_nights} night{s.weekend_nights === 1 ? '' : 's'}</strong></div>
+            </> : <div><span>Rate ({rateTypeInfo(s.rate_type).label.toLowerCase()})</span><strong>{money(s.rate)} × {periodText(s.periods, s.rate_type)}</strong></div>
           )}
           {num(s.balance_carried) > 0 && <div><span>Balance from previous stay</span><strong>{money(s.balance_carried)}</strong></div>}
           {num(s.balance_carried) < 0 && <div><span>Balance moved to next stay</span><strong>−{money(Math.abs(num(s.balance_carried)))}</strong></div>}
@@ -173,26 +199,7 @@ export default function StayDetail() {
           {num(s.refunded) > 0 && <div><span>Refunded (in the amounts above)</span><strong>{money(s.refunded)}</strong></div>}
           <div><span>Balance</span><strong><BalanceCell value={s.balance} /></strong></div>
         </div>
-        {s.payments.length > 0 && (
-          <div className="table-wrap">
-            <table className="table">
-              <thead><tr><th>Business day</th><th>Taken at</th><th>Type</th><th>Method</th><th className="num">Amount</th><th>Clerk</th><th>Notes</th></tr></thead>
-              <tbody>
-                {s.payments.map((p) => (
-                  <tr key={p.id} className={p.kind === 'REFUND' ? 'refund-row' : ''}>
-                    <td><strong>{fmtDate(p.business_date)}</strong></td>
-                    <td className="tiny muted">{fmtDateTime(p.paid_at)}</td>
-                    <td>{p.kind === 'REFUND' ? 'Refund' : p.kind === 'STAYOVER' ? 'Stay-over payment' : p.is_initial ? 'At check-in' : 'Balance payment'}</td>
-                    <td>{methodInfo(p.method).label}</td>
-                    <td className="num">{money(p.amount)}</td>
-                    <td>{p.clerk_name}</td>
-                    <td>{p.notes}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <PaymentList stay={s} onChanged={setS} />
       </section>
 
       {checkingOut && <CheckoutModal stay={s} onClose={() => setCheckingOut(false)} onDone={load} />}
@@ -200,5 +207,14 @@ export default function StayDetail() {
       {refunding && <RefundModal stay={s} onClose={() => setRefunding(false)} onSaved={(d) => { setS(d); setRefunding(false) }} />}
       {paying && <PaymentModal stay={s} onClose={() => setPaying(false)} onSaved={(d) => { setS(d); setPaying(false) }} />}
     </>
+  )
+}
+
+/** Linked stay shown by its dates and room (never the database number). */
+function StayLink({ st }) {
+  return (
+    <Link to={`/stays/${st.id}`}>
+      {fmtDate(st.check_in_date)} → {fmtDate(st.check_out_date)} · Room {st.room_number}
+    </Link>
   )
 }

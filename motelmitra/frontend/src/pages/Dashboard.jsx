@@ -8,6 +8,7 @@ import RoomSheet from '../components/RoomSheet'
 import StaysTable from '../components/StaysTable'
 import { Alert, Modal, PageHead, PaymentModal, Stat } from '../components/ui'
 import { addDays, fmtDate, money, rateFor, todayISO } from '../utils'
+import GridFilter from '../components/GridFilter'
 
 export default function Dashboard() {
   const [date, setDate] = useState(todayISO())
@@ -46,6 +47,12 @@ export default function Dashboard() {
         <Link to="/check-in" className="btn btn-primary">+ New Check-in</Link>
       </PageHead>
       <Alert>{err}</Alert>
+      {st?.low_stock > 0 && (
+        <div className="alert low-stock-banner">
+          <strong>Low stock:</strong> {st.low_stock} suppl{st.low_stock > 1 ? 'ies are' : 'y is'} at or below the alert level.
+          <Link to="/inventory">Open Inventory →</Link>
+        </div>
+      )}
 
       {st && (
         <div className="stats">
@@ -152,7 +159,7 @@ function AvailableRooms({ date, rooms, onClose, onCheckIn }) {
         </div>
       </div>
       {!list.length ? <div className="empty">No available rooms match.</div> : (
-        <div className="table-wrap avail-list">
+        <div className="table-wrap avail-list"><GridFilter />
           <table className="table">
             <thead>
               <tr><th>Room</th><th>Type</th><th className="num">Daily</th><th className="num">Weekly</th><th className="num">Monthly</th><th>Status</th><th></th></tr>

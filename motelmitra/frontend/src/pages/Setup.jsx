@@ -5,6 +5,7 @@ import { Alert, Empty, Modal, PageHead } from '../components/ui'
 import { ROLES, fmtDate, money, num } from '../utils'
 import { confirmBox } from '../confirm'
 import { PlanPill, SubscriptionModal } from './Plans'
+import GridFilter from '../components/GridFilter'
 
 /* ------------------------------------------------------------------ shared */
 function useList(url) {
@@ -71,13 +72,14 @@ export function RoomTypes() {
   const fields = [
     { name: 'name', label: 'Room type', required: true, placeholder: 'King, Queen, Double, Suite, Jacuzzi, Handicap' },
     { name: 'default_rate', label: 'Daily rate (per night)', type: 'number', step: '0.01', min: '0', required: true },
+    { name: 'weekend_rate', label: 'Weekend rate (Friday and Saturday nights)', type: 'number', step: '0.01', min: '0', placeholder: 'Blank = same as daily' },
     { name: 'weekly_rate', label: 'Weekly rate (per week)', type: 'number', step: '0.01', min: '0', placeholder: 'Blank = daily × 7' },
     { name: 'monthly_rate', label: 'Monthly rate (per month)', type: 'number', step: '0.01', min: '0', placeholder: 'Blank = daily × 30' },
     { name: 'description', label: 'Description', wide: true },
     { name: 'is_active', label: 'Status', type: 'checkbox', hint: 'Active' },
   ]
   async function save(f) {
-    const body = { ...f, weekly_rate: f.weekly_rate || 0, monthly_rate: f.monthly_rate || 0 }
+    const body = { ...f, weekly_rate: f.weekly_rate || 0, monthly_rate: f.monthly_rate || 0, weekend_rate: f.weekend_rate || 0 }
     if (f.id) await api.put(`/room-types/${f.id}/`, body)
     else await api.post('/room-types/', body)
     setEdit(null)
@@ -89,20 +91,22 @@ export function RoomTypes() {
   }
   return (
     <>
-      <PageHead title="Room Types & Rates" sub="Daily, weekly and monthly rates are pre-filled at check-in; clerks can change them per guest.">
-        <button className="btn btn-primary" onClick={() => setEdit({ name: '', default_rate: '', weekly_rate: '', monthly_rate: '', description: '', is_active: true })}>+ Add room type</button>
+      <PageHead title="Room Types & Rates" sub="Daily, weekend (Friday and Saturday nights), weekly and monthly rates are pre-filled at check-in; clerks can change them per guest.">
+        <button className="btn btn-primary" onClick={() => setEdit({ name: '', default_rate: '', weekend_rate: '', weekly_rate: '', monthly_rate: '', description: '', is_active: true })}>+ Add room type</button>
       </PageHead>
       <Alert>{err}</Alert>
       <div className="card no-pad">
         {rows && !rows.length && <Empty>No room types yet. Add King, Queen, Double, Suite, Jacuzzi, Handicap.</Empty>}
         {rows?.length > 0 && (
+          <div className="table-wrap"><GridFilter />
           <table className="table">
-            <thead><tr><th>Room type</th><th className="num">Daily</th><th className="num">Weekly</th><th className="num">Monthly</th><th className="num">Rooms</th><th>Description</th><th>Status</th><th></th></tr></thead>
+            <thead><tr><th>Room type</th><th className="num">Daily</th><th className="num">Weekend<div className="tiny muted">Fri, Sat night</div></th><th className="num">Weekly</th><th className="num">Monthly</th><th className="num">Rooms</th><th>Description</th><th>Status</th><th></th></tr></thead>
             <tbody>
               {rows.map((r) => (
                 <tr key={r.id}>
                   <td><strong>{r.name}</strong></td>
                   <td className="num">{money(r.default_rate)}</td>
+                  <td className="num">{num(r.weekend_rate) ? <strong>{money(r.weekend_rate)}</strong> : <span className="muted tiny">same as daily</span>}</td>
                   <td className="num">{num(r.weekly_rate) ? money(r.weekly_rate) : <span className="muted tiny">{money(num(r.default_rate) * 7)} (×7)</span>}</td>
                   <td className="num">{num(r.monthly_rate) ? money(r.monthly_rate) : <span className="muted tiny">{money(num(r.default_rate) * 30)} (×30)</span>}</td>
                   <td className="num">{r.room_count}</td>
@@ -116,6 +120,7 @@ export function RoomTypes() {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
       {edit && <FormModal title={edit.id ? 'Edit room type' : 'Add room type'} initial={edit} fields={fields} onSubmit={save} onClose={() => setEdit(null)} />}
@@ -171,6 +176,7 @@ export function Rooms() {
       <div className="card no-pad">
         {rows && !rows.length && <Empty>No rooms yet.</Empty>}
         {rows?.length > 0 && (
+          <div className="table-wrap"><GridFilter />
           <table className="table">
             <thead><tr><th>Room</th><th>Type</th><th className="num">Daily rate</th><th>Floor</th><th>Notes</th><th>Status</th><th></th></tr></thead>
             <tbody>
@@ -190,6 +196,7 @@ export function Rooms() {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
       {edit && <FormModal title={edit.id ? `Edit room ${edit.number}` : 'Add room'} initial={edit} fields={fields} onSubmit={save} onClose={() => setEdit(null)} />}
@@ -242,6 +249,7 @@ export function Users() {
       <Alert>{err}</Alert>
       <div className="card no-pad">
         {rows?.length > 0 && (
+          <div className="table-wrap"><GridFilter />
           <table className="table">
             <thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Phone</th><th>Since</th><th>Status</th><th></th></tr></thead>
             <tbody>
@@ -261,6 +269,7 @@ export function Users() {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
       {edit && <FormModal title={edit.id ? `Edit ${edit.username}` : 'Add user'} initial={edit} fields={fields(!edit.id)} onSubmit={save} onClose={() => setEdit(null)} />}
@@ -269,7 +278,7 @@ export function Users() {
 }
 
 /* ------------------------------------------------------------------ guest directory */
-export function Directory() {
+export function Directory({ embedded = false }) {
   const { isAdmin } = useAuth()
   const [q, setQ] = useState('')
   const [dnr, setDnr] = useState(false)
@@ -298,7 +307,7 @@ export function Directory() {
   const sum = (k) => (rows || []).reduce((a, g) => a + num(g[k]), 0)
   return (
     <>
-      <PageHead title="Guest Directory" sub="Every guest who has stayed, with what they paid and still owe" />
+      {!embedded && <PageHead title="Guest Directory" sub="Every guest who has stayed, with what they paid and still owe" />}
       <div className="filters">
         <input className="search" placeholder="Search name, phone, plate or DL…" value={q} onChange={(e) => setQ(e.target.value)} />
         <label className="inline check"><input type="checkbox" checked={dnr} onChange={(e) => setDnr(e.target.checked)} /> Do Not Rent only</label>
@@ -308,7 +317,7 @@ export function Directory() {
       <div className="card no-pad">
         {rows && !rows.length && <Empty>No guests found.</Empty>}
         {rows?.length > 0 && (
-          <div className="table-wrap">
+          <div className="table-wrap"><GridFilter />
             <table className="table dir-grid">
               <thead><tr>
                 <th>Name</th><th>Phone</th><th>Plate</th><th>City</th><th className="num">Stays</th><th>Last stay</th>
@@ -402,7 +411,7 @@ export function Clients() {
       <div className="card no-pad">
         {rows && !rows.length && <Empty>No clients yet.</Empty>}
         {rows?.length > 0 && (
-          <div className="table-wrap">
+          <div className="table-wrap"><GridFilter />
             <table className="table">
               <thead><tr><th>Motel</th><th>Location</th><th>Phone</th><th className="num">Rooms</th><th className="num">Users</th><th>Since</th><th>Plan</th><th>Status</th><th></th></tr></thead>
               <tbody>
@@ -441,6 +450,7 @@ export function Clients() {
       {planOf && <SubscriptionModal client={planOf} onClose={() => setPlanOf(null)} onChanged={load} />}
       {viewUsers && (
         <Modal title={`${viewUsers.client.name}: users`} onClose={() => setViewUsers(null)} width={640}>
+          <div className="table-wrap"><GridFilter />
           <table className="table">
             <thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Status</th></tr></thead>
             <tbody>
@@ -449,6 +459,7 @@ export function Clients() {
               ))}
             </tbody>
           </table>
+          </div>
         </Modal>
       )}
     </>

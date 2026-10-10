@@ -50,7 +50,7 @@ def stay_qs(client):
     return (
         Stay.objects.filter(client=client)
         .select_related("guest", "room", "room__room_type", "clerk", "deleted_by")
-        .prefetch_related("payments", "payments__clerk")
+        .prefetch_related("payments", "payments__clerk", "extra_guests", "extra_guests__photos")
     )
 
 
@@ -107,6 +107,15 @@ def occupying_on(stays, day):
             continue
         out.append(s)
     return out
+
+
+def rented_on(stays, day):
+    """Rentals counted for `day`: guests in a room that night + check-ins of that day who already
+    left (same-day check out). A room rented twice in a day counts twice. Used for every
+    "Occupied / Rooms rented" number and occupancy %, so all screens match the room sheet."""
+    occ = occupying_on(stays, day)
+    ids = {s.id for s in occ}
+    return occ + [s for s in stays if s.check_in_date == day and s.id not in ids]
 
 
 # ------------------------------------------------------------------ setup
@@ -170,6 +179,7 @@ class RoomViewSet(viewsets.ModelViewSet):
                 "default_rate": str(r.room_type.default_rate),
                 "weekly_rate": str(r.room_type.weekly_rate),
                 "monthly_rate": str(r.room_type.monthly_rate),
+                "weekend_rate": str(r.room_type.weekend_rate),
                 "occupied": bool(s),
                 "stay_id": s.id if s else None,
                 "guest_name": s.guest.name if s else None,
@@ -423,7 +433,8 @@ class StayViewSet(viewsets.ModelViewSet):
             qs = qs.filter(
                 Q(guest__name__icontains=q) | Q(guest__phone__icontains=q)
                 | Q(guest__license_plate__icontains=q) | Q(guest__dl_number__icontains=q) | Q(room__number__iexact=q)
-            )
+                | Q(extra_guests__name__icontains=q) | Q(extra_guests__dl_number__icontains=q)
+            ).distinct()
         return qs
 
     def list(self, request, *args, **kwargs):
@@ -541,6 +552,52 @@ class StayViewSet(viewsets.ModelViewSet):
             ser.save(stay=stay, clerk=request.user, paid_at=timezone.now())
         stay = stay_qs(request.user.client).get(pk=stay.pk)
         return Response(StaySerializer(stay).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["patch", "delete"], url_path=r"payments/(?P<pid>\d+)")
+    def change_payment(self, request, pk=None, pid=None):
+        """
+        Fix a payment typed wrong. PATCH {amount, method, notes, reason} or DELETE {reason}.
+        Admin: any payment. Clerk: only their own payment, on the same business day. Every change is logged.
+        """
+        from .models import PaymentChange
+        stay = self.get_object()
+        pay = stay.payments.filter(pk=pid).first()
+        if not pay:
+            raise ValidationError({"detail": "Payment not found."})
+        user = request.user
+        if user.role != User.CLIENT_ADMIN:
+            today = business.business_date(user.client)
+            if pay.clerk_id != user.id or pay.business_date != today:
+                raise PermissionDenied("You can change only your own payments, on the same business day. Ask the admin.")
+        snap = lambda x: {"amount": str(x.amount), "method": x.method, "notes": x.notes,   # noqa: E731
+                          "business_date": str(x.business_date), "kind": x.kind}
+        before = snap(pay)
+        reason = (request.data.get("reason") or "").strip()[:255]
+        with transaction.atomic():
+            if request.method == "DELETE":
+                PaymentChange.objects.create(stay=stay, payment_id_was=pay.id, action=PaymentChange.DELETE,
+                                             before=before, reason=reason, user=user)
+                pay.delete()
+            else:
+                if "amount" in request.data:
+                    amt = _decimal(request.data.get("amount"), "amount")
+                    if amt <= 0:
+                        raise ValidationError({"amount": "Amount must be more than 0. To remove a payment, delete it."})
+                    pay.amount = -amt if pay.kind == Payment.REFUND else amt
+                if "method" in request.data:
+                    if request.data["method"] not in METHODS:
+                        raise ValidationError({"method": "Use CASH, CREDIT or CHECK."})
+                    pay.method = request.data["method"]
+                if "notes" in request.data:
+                    pay.notes = (request.data.get("notes") or "").strip()[:255]
+                after = snap(pay)
+                if after == before:
+                    raise ValidationError({"detail": "Nothing changed."})
+                pay.save()
+                PaymentChange.objects.create(stay=stay, payment_id_was=pay.id, action=PaymentChange.EDIT,
+                                             before=before, after=after, reason=reason, user=user)
+        stay = stay_qs(user.client).get(pk=stay.pk)
+        return Response(StaySerializer(stay).data)
 
     @action(detail=True, methods=["post"])
     def checkout(self, request, pk=None):
@@ -919,7 +976,7 @@ def dashboard(request):
                       "expenses_cash": q2(exp_cash), "expenses_card": q2(exp_card), "expenses_check": q2(exp_check)},
         "stats": {
             "total_rooms": total_rooms,
-            "occupied": len({s.room_id for s in occupied}),
+            "occupied": len(rented_on(staying, day)),
             "available": max(total_rooms - len({s.room_id for s in occupied}), 0),
             "checkouts_due": len([s for s in checkouts if s.status == Stay.CHECKED_IN]),
             "checked_out": len([s for s in checkouts if s.status == Stay.CHECKED_OUT]),
@@ -928,6 +985,7 @@ def dashboard(request):
             "open_balance_total": str(sum((s.total_amount - paid(s) for s in open_balances), ZERO)),
             "notes": Note.objects.filter(client=client, date=day).count(),
             "open_problems": RoomIssue.objects.filter(client=client).exclude(status=RoomIssue.FIXED).count(),
+            "low_stock": low_stock_count(client),
             "out_of_order": Room.objects.filter(client=client, is_active=True, hk_status=Room.OUT_OF_ORDER).count(),
             "dirty": Room.objects.filter(client=client, is_active=True, hk_status__in=[Room.DIRTY, Room.CLEANING])
                                  .exclude(id__in=occupied_ids).count(),
@@ -940,6 +998,7 @@ def dashboard(request):
             {"id": r.id, "number": r.number, "room_type": r.room_type.name,
              "default_rate": str(r.room_type.default_rate),
              "weekly_rate": str(r.room_type.weekly_rate), "monthly_rate": str(r.room_type.monthly_rate),
+             "weekend_rate": str(r.room_type.weekend_rate),
              "available": r.id not in occupied_ids,
              "due_out": r.id in due_out_ids,
              "hk_status": r.hk_status, "hk_note": r.hk_note, "open_issues": issues.get(r.id, 0)}
@@ -1072,17 +1131,17 @@ def report_occupancy(request):
     days, type_nights = [], {k: 0 for k in type_totals}
     d = start
     while d <= end:
-        occ = occupying_on(stays, d)
-        room_ids = {s.room_id for s in occ}
+        occ = rented_on(stays, d)
+        room_ids = {s.room_id for s in occupying_on(stays, d)}   # rooms physically taken tonight
         for s in occ:
             name = s.room.room_type.name
             if name in type_nights:
                 type_nights[name] += 1
         revenue = sum((s.nightly_value for s in occ), ZERO)
         days.append({
-            "date": d, "occupied": len(room_ids), "available": max(total_rooms - len(room_ids), 0),
+            "date": d, "occupied": len(occ), "available": max(total_rooms - len(room_ids), 0),
             "total_rooms": total_rooms,
-            "occupancy_pct": round(len(room_ids) * 100 / total_rooms, 1) if total_rooms else 0,
+            "occupancy_pct": round(len(occ) * 100 / total_rooms, 1) if total_rooms else 0,
             "room_revenue": str(revenue),
             "adr": str((revenue / len(occ)).quantize(Decimal("0.01"))) if occ else "0.00",
         })
@@ -1160,7 +1219,8 @@ def report_today(request):
     # occupancy tonight
     total_rooms = Room.objects.filter(client=client, is_active=True).count()
     staying = list(base.filter(check_in_date__lte=day, check_out_date__gte=day))
-    occupied = len({s.room_id for s in occupying_on(staying, day)})
+    rooms_taken = len({s.room_id for s in occupying_on(staying, day)})   # rooms physically taken tonight
+    rented = len(rented_on(staying, day))                                 # a room rented twice counts twice
 
     checkin_rows, booked, owed = [], ZERO, ZERO
     for s in checkins:
@@ -1186,10 +1246,11 @@ def report_today(request):
             "checkins": len(checkins),
             "checkouts_due": len([s for s in checkouts if s.status == Stay.CHECKED_IN]),
             "checkouts_done": len([s for s in checkouts if s.status == Stay.CHECKED_OUT]),
-            "occupied": occupied,
-            "available": max(total_rooms - occupied, 0),
+            "occupied": rented,
+            "rented": rented,
+            "available": max(total_rooms - rooms_taken, 0),
             "total_rooms": total_rooms,
-            "occupancy_pct": round(occupied * 100 / total_rooms, 1) if total_rooms else 0,
+            "occupancy_pct": round(rented * 100 / total_rooms, 1) if total_rooms else 0,
         },
         "money": {
             "booked": str(booked),
@@ -1369,7 +1430,7 @@ def day_summary(client, day):
     refunds = sum((-p.amount for p in pays if p.kind == Payment.REFUND), ZERO)
     staying = list(base.filter(check_in_date__lte=day, check_out_date__gte=day))
     total_rooms = Room.objects.filter(client=client, is_active=True).count()
-    occupied = len({s.room_id for s in occupying_on(staying, day)})
+    occupied = len(rented_on(staying, day))
     due_out = [s for s in staying if s.check_out_date == day and s.check_in_date != day and s.status == Stay.CHECKED_IN]
     arrivals = [s for s in staying if s.check_in_date == day]
     unpaid = [s for s in arrivals if s.total_amount - paid(s) > 0]
@@ -2074,6 +2135,7 @@ def housekeeping_board(request):
             "service_needed": count(lambda x: x["service"] == "NEEDED"),
             "service_done": count(lambda x: x["service"] in ("DONE", "DECLINED")),
             "open_issues": sum(issues.values()),
+            "low_stock": low_stock_count(client),
         },
     })
 
@@ -2526,3 +2588,132 @@ class CustomReportViewSet(viewsets.ModelViewSet):
     def perform_destroy(self, instance):
         self._can_change(instance)
         instance.delete()
+
+
+
+# ------------------------------------------------------------------ inventory (supplies)
+class InventoryItemViewSet(viewsets.ModelViewSet):
+    """
+    Supplies the motel keeps (towels, soap, toilet paper ...). Everyone sees the list.
+    Admin and clerks add / edit items and record stock in. Everyone (maintenance too) records items taken out.
+    Only the admin corrects a count. Delete = stop tracking (history is kept).
+    """
+    permission_classes = [IsMaintenanceOrStaff]
+    http_method_names = ["get", "post", "patch", "delete"]
+
+    def get_serializer_class(self):
+        from .serializers import InventoryItemSerializer
+        return InventoryItemSerializer
+
+    def get_queryset(self):
+        from .models import InventoryItem
+        qs = InventoryItem.objects.filter(client=self.request.user.client).prefetch_related("moves")
+        if self.request.query_params.get("all") != "1":
+            qs = qs.filter(is_active=True)
+        return qs
+
+    def _staff_only(self):
+        if self.request.user.role == User.MAINTENANCE:
+            raise PermissionDenied("Ask the front desk or admin to change the item list.")
+
+    def perform_create(self, serializer):
+        from .models import InventoryItem, StockMove
+        self._staff_only()
+        client = self.request.user.client
+        old = InventoryItem.objects.filter(client=client, name__iexact=serializer.validated_data["name"],
+                                           is_active=False).first()
+        if old:   # an item removed before, added again: bring it back (its history stays)
+            serializer.instance = old
+            item = serializer.save(is_active=True, quantity=old.quantity)
+            want = serializer.validated_data.get("quantity")
+            if want is not None and want != old.quantity:
+                StockMove.objects.create(client=client, item=item, kind=StockMove.ADJUST, change=want - old.quantity,
+                                         balance_after=want, note="Count when added again", user=self.request.user,
+                                         business_date=business.business_date(client))
+                item.quantity = want
+                item.save(update_fields=["quantity"])
+            return
+        item = serializer.save(client=client)
+        if item.quantity:
+            StockMove.objects.create(client=item.client, item=item, kind=StockMove.ADJUST, change=item.quantity,
+                                     balance_after=item.quantity, note="Opening count", user=self.request.user,
+                                     business_date=business.business_date(item.client))
+
+    def perform_update(self, serializer):
+        self._staff_only()
+        if "quantity" in serializer.validated_data:
+            serializer.validated_data.pop("quantity")   # counts change only through stock in / out / correct
+        serializer.save()
+
+    def destroy(self, request, *args, **kwargs):
+        self._staff_only()
+        item = self.get_object()
+        item.is_active = False
+        item.save(update_fields=["is_active"])
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=["post"])
+    def move(self, request, pk=None):
+        """{kind: IN | OUT | ADJUST, quantity, note, room, cost}. ADJUST sets the counted quantity."""
+        from .models import InventoryItem, StockMove
+        from .serializers import InventoryItemSerializer
+        user = request.user
+        kind = request.data.get("kind")
+        if kind not in (StockMove.IN, StockMove.OUT, StockMove.ADJUST):
+            raise ValidationError({"kind": "Use IN, OUT or ADJUST."})
+        if kind == StockMove.IN and user.role == User.MAINTENANCE:
+            raise PermissionDenied("Stock in is recorded by the front desk or admin.")
+        if kind == StockMove.ADJUST and user.role != User.CLIENT_ADMIN:
+            raise PermissionDenied("Only the admin can correct a count.")
+        qty = _decimal(request.data.get("quantity"), "quantity")
+        if kind != StockMove.ADJUST and qty <= 0:
+            raise ValidationError({"quantity": "Enter a quantity above 0."})
+        room = None
+        if request.data.get("room"):
+            room = Room.objects.filter(client=user.client, pk=request.data.get("room")).first()
+        cost = request.data.get("cost")
+        cost = _decimal(cost, "cost") if cost not in (None, "") else None
+        with transaction.atomic():
+            item = InventoryItem.objects.select_for_update().get(client=user.client, pk=pk, is_active=True)
+            if kind == StockMove.IN:
+                change = qty
+            elif kind == StockMove.OUT:
+                if qty > item.quantity:
+                    raise ValidationError({"quantity": f"Only {item.quantity.normalize():f} {item.unit} in stock."})
+                change = -qty
+            else:
+                change = qty - item.quantity
+            item.quantity = item.quantity + change
+            item.save(update_fields=["quantity"])
+            StockMove.objects.create(client=user.client, item=item, kind=kind, change=change, balance_after=item.quantity,
+                                     room=room, cost=cost if kind == StockMove.IN else None,
+                                     note=(request.data.get("note") or "").strip()[:255], user=user,
+                                     business_date=business.business_date(user.client))
+        item = self.get_queryset().get(pk=item.pk)
+        return Response(InventoryItemSerializer(item, context={"request": request}).data)
+
+
+@api_view(["GET"])
+@permission_classes([IsMaintenanceOrStaff])
+def inventory_moves(request):
+    """Stock history: ?item=ID&start=&end=&kind= (newest first, up to 500)."""
+    from .models import StockMove
+    from .serializers import StockMoveSerializer
+    p = request.query_params
+    qs = StockMove.objects.filter(client=request.user.client).select_related("item", "room", "user")
+    if p.get("item"):
+        qs = qs.filter(item_id=p["item"])
+    if p.get("kind"):
+        qs = qs.filter(kind=p["kind"])
+    if p.get("start"):
+        qs = qs.filter(business_date__gte=parse_date(p["start"], None, "start"))
+    if p.get("end"):
+        qs = qs.filter(business_date__lte=parse_date(p["end"], None, "end"))
+    return Response(StockMoveSerializer(qs[:500], many=True).data)
+
+
+def low_stock_count(client):
+    from .models import InventoryItem
+    from django.db.models import F
+    return InventoryItem.objects.filter(client=client, is_active=True, min_quantity__gt=0,
+                                        quantity__lte=F("min_quantity")).count()

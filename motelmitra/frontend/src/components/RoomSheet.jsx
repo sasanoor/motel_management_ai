@@ -2,6 +2,7 @@ import { Fragment } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { dayOfStay, daysLeft, fmtDate, fmtTime, money, num, rateTypeInfo } from '../utils'
 import { BalanceCell, Empty, HkPill, IssueBadge } from './ui'
+import GridFilter from './GridFilter'
 
 /**
  * Every room for one date. A room rented more than once gets one row per entry;
@@ -96,7 +97,7 @@ export default function RoomSheet({ date, rooms, stays: allStays, dayMoney, onPa
   )
 
   return (
-    <div className="table-wrap sheet-wrap">
+    <div className="table-wrap sheet-wrap"><GridFilter />
       <table className="table sheet">
         <thead>
           <tr>

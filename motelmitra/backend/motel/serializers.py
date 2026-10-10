@@ -14,13 +14,13 @@ class RoomTypeSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = RoomType
-        fields = ["id", "name", "default_rate", "weekly_rate", "monthly_rate", "description", "is_active", "room_count"]
+        fields = ["id", "name", "default_rate", "weekly_rate", "monthly_rate", "weekend_rate", "description", "is_active", "room_count"]
 
     def get_room_count(self, obj):
         return obj.rooms.filter(is_active=True).count()
 
     def validate(self, attrs):
-        for k in ("default_rate", "weekly_rate", "monthly_rate"):
+        for k in ("default_rate", "weekly_rate", "monthly_rate", "weekend_rate"):
             if attrs.get(k) is not None and attrs[k] < 0:
                 raise serializers.ValidationError({k: "Rate cannot be negative."})
         return attrs
@@ -46,10 +46,13 @@ class RoomSerializer(serializers.ModelSerializer):
     monthly_rate = serializers.DecimalField(
         source="room_type.monthly_rate", max_digits=10, decimal_places=2, read_only=True
     )
+    weekend_rate = serializers.DecimalField(
+        source="room_type.weekend_rate", max_digits=10, decimal_places=2, read_only=True
+    )
 
     class Meta:
         model = Room
-        fields = ["id", "number", "room_type", "room_type_name", "default_rate", "weekly_rate", "monthly_rate",
+        fields = ["id", "number", "room_type", "room_type_name", "default_rate", "weekly_rate", "monthly_rate", "weekend_rate",
                   "floor", "notes", "is_active"]
 
     def validate_room_type(self, value):
@@ -171,6 +174,8 @@ class StaySerializer(serializers.ModelSerializer):
     room_type = serializers.CharField(source="room.room_type.name", read_only=True)
     clerk_name = serializers.SerializerMethodField()
     renewed_to = serializers.SerializerMethodField()
+    renewed_from_info = serializers.SerializerMethodField()
+    renewed_to_info = serializers.SerializerMethodField()
     early = serializers.SerializerMethodField()
     refunded = serializers.SerializerMethodField()
     deleted_by_name = serializers.SerializerMethodField()
@@ -181,6 +186,9 @@ class StaySerializer(serializers.ModelSerializer):
     balance = serializers.SerializerMethodField()
     payments = PaymentSerializer(many=True, read_only=True)
     room_rates = serializers.SerializerMethodField()
+    weekend_nights = serializers.IntegerField(read_only=True)
+    extra_guests = serializers.SerializerMethodField()
+    payment_changes = serializers.SerializerMethodField()
 
     class Meta:
         model = Stay
@@ -191,16 +199,28 @@ class StaySerializer(serializers.ModelSerializer):
             "pets", "pet_fee", "extra_persons", "extra_person_fee", "card_fee", "late_fee", "early_checkin_fee", "damage_fee",
             "charges_total", "total_amount", "early", "refunded",
             "amount_paid", "cash_paid", "credit_paid", "check_paid", "balance",
-            "clerk", "clerk_name", "comments", "status", "checked_out_at", "renewed_from", "renewed_to",
+            "clerk", "clerk_name", "comments", "status", "checked_out_at", "renewed_from", "renewed_to", "renewed_from_info", "renewed_to_info",
             "is_deleted", "deleted_at", "deleted_by_name", "payments", "created_at",
             "extra_stay_nights", "extra_stay_charge", "room_rates", "balance_carried",
+            "weekend_rate", "weekend_nights", "extra_guests", "payment_changes",
         ]
+
+    def get_payment_changes(self, obj):
+        return [{"id": c.id, "action": c.action, "before": c.before, "after": c.after, "reason": c.reason,
+                 "by": (c.user.get_full_name() or c.user.username) if c.user else "", "at": c.created_at}
+                for c in obj.payment_changes.select_related("user").all()]
+
+    def get_extra_guests(self, obj):
+        return [{"id": g.id, "name": g.name, "dl_number": g.dl_number,
+                 "photos": [{"id": p.id, "kind": p.kind, "url": f"/api/photos/{p.id}/file/"} for p in g.photos.all()]}
+                for g in obj.extra_guests.all()]
 
     def get_room_rates(self, obj):
         """The room type's current rates (Add stay offers daily / weekly / monthly like check-in)."""
         rt = obj.room.room_type
         daily = Decimal(rt.default_rate or 0)
         return {"DAILY": str(daily.quantize(Decimal("0.01"))),
+                "WEEKEND": str(Decimal(rt.weekend_rate or 0).quantize(Decimal("0.01"))),
                 "WEEKLY": str((Decimal(rt.weekly_rate or 0) or daily * 7).quantize(Decimal("0.01"))),
                 "MONTHLY": str((Decimal(rt.monthly_rate or 0) or daily * 30).quantize(Decimal("0.01")))}
 
@@ -227,6 +247,20 @@ class StaySerializer(serializers.ModelSerializer):
         nxt = obj.renewals.filter(is_deleted=False).order_by("id").first()
         return nxt.id if nxt else None
 
+    @staticmethod
+    def _link(st):
+        """Shown instead of database numbers: dates and room of the linked stay."""
+        if not st:
+            return None
+        return {"id": st.id, "check_in_date": st.check_in_date, "check_out_date": st.check_out_date,
+                "room_number": st.room.number, "status": st.status}
+
+    def get_renewed_from_info(self, obj):
+        return self._link(obj.renewed_from if obj.renewed_from_id else None)
+
+    def get_renewed_to_info(self, obj):
+        return self._link(obj.renewals.filter(is_deleted=False).select_related("room").order_by("id").first())
+
     def get_deleted_by_name(self, obj):
         return (obj.deleted_by.get_full_name() or obj.deleted_by.username) if obj.deleted_by else ""
 
@@ -250,6 +284,31 @@ class StaySerializer(serializers.ModelSerializer):
 
     def get_balance(self, obj):
         return str(obj.total_amount - self._sum(obj))
+
+
+def save_extra_guests(stay, rows):
+    """Extra guests from the check-in / edit form. None = leave as they are; a list = the full new list."""
+    if rows is None:
+        return
+    from .models import ExtraGuest, attach_photos
+    keep = []
+    for r in rows[:20]:
+        name = str(r.get("name") or "").strip()[:150]
+        dl = str(r.get("dl_number") or "").strip()[:50]
+        if not name and not dl and not r.get("photo_ids"):
+            continue
+        if not name:
+            raise serializers.ValidationError({"extra_guests": "Each extra guest needs a name."})
+        g = stay.extra_guests.filter(pk=r.get("id")).first() if r.get("id") else None
+        if g is None:
+            g = ExtraGuest(stay=stay)
+        g.name, g.dl_number = name, dl
+        g.save()
+        keep.append(g.pk)
+        ids = [int(i) for i in (r.get("photo_ids") or []) if str(i).isdigit()]
+        if ids:
+            attach_photos(stay, ids, False, extra_guest=g)
+    stay.extra_guests.exclude(pk__in=keep).delete()
 
 
 def clean_name_parts(attrs, instance=None):
@@ -311,13 +370,16 @@ class StayWriteSerializer(serializers.ModelSerializer):
     # photos taken on the form before saving (DL front / back), and "use the guest's last DL photo"
     photo_ids = serializers.ListField(child=serializers.IntegerField(), required=False, write_only=True)
     reuse_dl = serializers.BooleanField(required=False, default=False, write_only=True)
+    # extra guests: [{id?, name, dl_number, photo_ids}] (edit sends the full list; missing ones are removed)
+    extra_guests = serializers.ListField(child=serializers.DictField(), required=False, write_only=True)
+    weekend_rate = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, allow_null=True)
 
     class Meta:
         model = Stay
         fields = [
             "id", "room", "check_in_date", "check_in_time", "check_out_date", "check_out_time",
             "num_guests", "rate_type", "periods", "rate", "adjustment", "pets", "pet_fee", "extra_persons", "extra_person_fee", "card_fee",
-            "late_fee", "early_checkin_fee", "comments", "photo_ids", "reuse_dl",
+            "late_fee", "early_checkin_fee", "comments", "photo_ids", "reuse_dl", "extra_guests", "weekend_rate",
             "guest_id", *GUEST_FIELDS, "cash", "credit", "check", "allow_overlap", "renew_from", "room_status_ok",
             "carry_balance",
         ]
@@ -428,8 +490,13 @@ class StayWriteSerializer(serializers.ModelSerializer):
             setattr(guest, k, v)
         guest.save()
 
+        rt = attrs["room"].room_type
+        if attrs.get("rate_type", Stay.DAILY) != Stay.DAILY:
+            attrs["weekend_rate"] = ZERO
+        elif attrs.get("weekend_rate") is None:
+            attrs["weekend_rate"] = rt.weekend_rate or ZERO   # Friday / Saturday nights at the room type's weekend rate
+        extra = attrs.pop("extra_guests", None)
         if "rate" not in attrs or attrs["rate"] is None:
-            rt = attrs["room"].room_type
             attrs["rate"] = {
                 Stay.WEEKLY: rt.weekly_rate or rt.default_rate * 7,
                 Stay.MONTHLY: rt.monthly_rate or rt.default_rate * 30,
@@ -475,6 +542,7 @@ class StayWriteSerializer(serializers.ModelSerializer):
                     clerk=request.user, is_initial=True,
                 )
         attach_photos(stay, photo_ids, reuse_dl)
+        save_extra_guests(stay, extra)
         return stay
 
     @transaction.atomic
@@ -488,6 +556,11 @@ class StayWriteSerializer(serializers.ModelSerializer):
         attrs.pop("check", None)
         photo_ids = attrs.pop("photo_ids", None) or []
         attrs.pop("reuse_dl", None)
+        extra = attrs.pop("extra_guests", None)
+        if attrs.get("rate_type", stay.rate_type) != Stay.DAILY:
+            attrs["weekend_rate"] = ZERO
+        elif "weekend_rate" in attrs and attrs["weekend_rate"] is None:
+            attrs.pop("weekend_rate")
         guest_data = self._guest_data(attrs)
         for k, v in guest_data.items():
             setattr(stay.guest, k, v)
@@ -497,6 +570,7 @@ class StayWriteSerializer(serializers.ModelSerializer):
             setattr(stay, k, v)
         stay.save()
         attach_photos(stay, photo_ids, False)
+        save_extra_guests(stay, extra)
         if stay.room_id != old_room:   # room changed: photos move to the new room's folder
             from .models import place_photo
             for ph in stay.photos.all():
@@ -583,11 +657,15 @@ class PhotoSerializer(serializers.ModelSerializer):
     url = serializers.SerializerMethodField()
     file_name = serializers.SerializerMethodField()
     uploaded_by_name = serializers.SerializerMethodField()
-    kind_label = serializers.CharField(source="get_kind_display", read_only=True)
+    kind_label = serializers.SerializerMethodField()
 
     class Meta:
         model = Photo
-        fields = ["id", "kind", "kind_label", "stay", "guest", "via", "url", "file_name", "uploaded_by_name", "created_at"]
+        fields = ["id", "kind", "kind_label", "stay", "guest", "extra_guest", "via", "url", "file_name", "uploaded_by_name", "created_at"]
+
+    def get_kind_label(self, obj):
+        label = obj.get_kind_display()
+        return f"{label} · {obj.extra_guest.name} (extra guest)" if obj.extra_guest_id else label
 
     def get_url(self, obj):
         return f"/api/photos/{obj.id}/file/"
@@ -670,3 +748,53 @@ class RoomIssueSerializer(serializers.ModelSerializer):
         if not v.strip():
             raise serializers.ValidationError("Describe the problem.")
         return v.strip()
+
+
+class InventoryItemSerializer(serializers.ModelSerializer):
+    is_low = serializers.BooleanField(read_only=True)
+    last_move_at = serializers.SerializerMethodField()
+
+    class Meta:
+        from .models import InventoryItem
+        model = InventoryItem
+        fields = ["id", "name", "category", "unit", "quantity", "min_quantity", "is_active", "is_low", "last_move_at"]
+
+    def get_last_move_at(self, obj):
+        m = obj.moves.first()
+        return m.created_at if m else None
+
+    def validate_name(self, v):
+        v = v.strip()
+        if not v:
+            raise serializers.ValidationError("Enter a name.")
+        client = self.context["request"].user.client
+        from .models import InventoryItem
+        dup = InventoryItem.objects.filter(client=client, name__iexact=v, is_active=True)
+        if self.instance:
+            dup = dup.exclude(pk=self.instance.pk)
+        if dup.exists():
+            raise serializers.ValidationError("An item with this name already exists.")
+        return v
+
+    def validate(self, attrs):
+        for k in ("quantity", "min_quantity"):
+            if attrs.get(k) is not None and attrs[k] < 0:
+                raise serializers.ValidationError({k: "Cannot be below 0."})
+        return attrs
+
+
+class StockMoveSerializer(serializers.ModelSerializer):
+    item_name = serializers.CharField(source="item.name", read_only=True)
+    unit = serializers.CharField(source="item.unit", read_only=True)
+    room_number = serializers.CharField(source="room.number", read_only=True, default="")
+    user_name = serializers.SerializerMethodField()
+    kind_label = serializers.CharField(source="get_kind_display", read_only=True)
+
+    class Meta:
+        from .models import StockMove
+        model = StockMove
+        fields = ["id", "item", "item_name", "unit", "kind", "kind_label", "change", "balance_after", "room", "room_number",
+                  "cost", "note", "user_name", "business_date", "created_at"]
+
+    def get_user_name(self, obj):
+        return (obj.user.get_full_name() or obj.user.username) if obj.user else ""
