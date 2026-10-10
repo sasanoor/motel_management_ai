@@ -6,7 +6,7 @@ const r2 = (n) => Math.round(n * 100) / 100
 
 /**
  * Money taken in a window (Pay, Add stay), worked the same way as the check-in page:
- * cash + card, card fee (auto % of the card amount, editable), "Put balance in cash / on card",
+ * cash + card + check, card fee (auto % of the card amount, editable), "Put balance in cash / on card / in check",
  * and an editable balance (the difference is saved as an extra charge or discount).
  *
  * owed = what the guest owes before this payment, without the card fee and without a balance edit.
@@ -14,6 +14,7 @@ const r2 = (n) => Math.round(n * 100) / 100
 export default function usePayment(owed, { initialCash = '' } = {}) {
   const [cash, setCashRaw] = useState(initialCash)
   const [credit, setCreditRaw] = useState('')
+  const [check, setCheckRaw] = useState('')
   const [fee, setFeeRaw] = useState(null)        // null = auto (% of card amount)
   const [pct, setPct] = useState(0)
   const [adj, setAdj] = useState(0)              // balance edited: + extra charge, - discount
@@ -22,22 +23,25 @@ export default function usePayment(owed, { initialCash = '' } = {}) {
   useEffect(() => { api.get('/settings/').then((r) => setPct(num(r.data.card_fee_percent))).catch(() => {}) }, [])
 
   const cardFee = fee ?? r2((num(credit) * pct) / 100)
-  const base = r2(owed + cardFee - num(cash) - num(credit))   // balance before any edit
+  const base = r2(owed + cardFee - num(cash) - num(credit) - num(check))   // balance before any edit
   const after = r2(base + adj)
-  const paying = num(cash) + num(credit)
+  const paying = num(cash) + num(credit) + num(check)
 
   // a balance edit is applied last: changing cash / card / fee clears it so it never goes stale
   const setCash = (v) => { setCashRaw(v); setAdj(0) }
   const setCredit = (v) => { setCreditRaw(v); setAdj(0) }
+  const setCheck = (v) => { setCheckRaw(v); setAdj(0) }
   const setFee = (v) => { setFeeRaw(v); setAdj(0) }
 
   return {
-    cash, credit, fee, pct, adj, cardFee, after, paying, balanceText,
-    setCash, setCredit, setFee,
+    cash, credit, check, fee, pct, adj, cardFee, after, paying, balanceText,
+    owedNow: r2(owed + cardFee + adj),   // owed before this payment, card fee and balance edit included
+    setCash, setCredit, setCheck, setFee,
     resetAdj: () => setAdj(0),
-    balanceInCash: () => setCashRaw(Math.max(r2(owed + adj + cardFee - num(credit)), 0).toFixed(2)),
+    balanceInCash: () => setCashRaw(Math.max(r2(owed + adj + cardFee - num(credit) - num(check)), 0).toFixed(2)),
+    balanceInCheck: () => setCheckRaw(Math.max(r2(owed + adj + cardFee - num(credit) - num(cash)), 0).toFixed(2)),
     balanceOnCard: () => {
-      const due = owed + adj - num(cash)
+      const due = owed + adj - num(cash) - num(check)
       if (due <= 0) return
       const c = fee == null ? due / (1 - pct / 100) : due + num(fee)
       setCreditRaw(r2(c).toFixed(2))
@@ -54,7 +58,7 @@ export default function usePayment(owed, { initialCash = '' } = {}) {
       onBlur: () => setBalanceText(null),
     },
     body: () => ({
-      cash: num(cash).toFixed(2), credit: num(credit).toFixed(2),
+      cash: num(cash).toFixed(2), credit: num(credit).toFixed(2), check: num(check).toFixed(2),
       card_fee: cardFee.toFixed(2), adjustment_change: adj.toFixed(2),
     }),
   }

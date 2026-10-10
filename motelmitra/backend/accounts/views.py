@@ -8,9 +8,11 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from .authentication import SingleSessionRefreshSerializer
 
-from .models import Client, User
+from .models import Client, Plan, Subscription, User
+from .subscription import end_for, plan_status
 from .permissions import IsClientAdmin, IsClientStaff, IsSuperAdmin
 from .serializers import (
+    PlanSerializer, SubscriptionSerializer,
     ClientOnboardSerializer, ClientSerializer, LoginSerializer, MotelSettingsSerializer, UserSerializer,
 )
 
@@ -74,6 +76,65 @@ class ClientViewSet(viewsets.ModelViewSet):
     def users(self, request, pk=None):
         client = self.get_object()
         return Response(UserSerializer(client.users.all().order_by("username"), many=True).data)
+
+    @action(detail=True, methods=["get", "post"])
+    def subscriptions(self, request, pk=None):
+        """Plans of one motel. POST {plan, start_date?, price?, notes}: start defaults to the day after the
+        paid-up date (renewal) or today (new / expired)."""
+        import datetime
+        from decimal import Decimal, InvalidOperation
+        client = self.get_object()
+        if request.method == "POST":
+            plan = Plan.objects.filter(pk=request.data.get("plan")).first()
+            if not plan:
+                raise ValidationError({"plan": "Pick a plan."})
+            st = plan_status(client)
+            raw = request.data.get("start_date")
+            if raw:
+                try:
+                    start = datetime.date.fromisoformat(str(raw))
+                except ValueError:
+                    raise ValidationError({"start_date": "Use a valid date."})
+            elif st["status"] in ("active", "expiring"):
+                start = st["paid_until"] + datetime.timedelta(days=1)
+            else:
+                start = st.get("today") or datetime.date.today()
+            try:
+                price = Decimal(str(request.data.get("price"))) if request.data.get("price") not in (None, "") else plan.price
+            except InvalidOperation:
+                raise ValidationError({"price": "Enter a number."})
+            if price < 0 or price > Decimal("999999"):
+                raise ValidationError({"price": "Enter a price from 0 to 999999."})
+            Subscription.objects.create(client=client, plan=plan, plan_name=plan.name, months=plan.months, price=price,
+                                        start_date=start, end_date=end_for(start, plan.months),
+                                        notes=(request.data.get("notes") or "").strip()[:255], created_by=request.user)
+        return Response({"plan": plan_status(client),
+                         "history": SubscriptionSerializer(client.subscriptions.all(), many=True).data})
+
+    @action(detail=True, methods=["delete"], url_path=r"subscriptions/(?P<sub_id>\d+)")
+    def remove_subscription(self, request, pk=None, sub_id=None):
+        """Undo a plan added by mistake."""
+        client = self.get_object()
+        client.subscriptions.filter(pk=sub_id).delete()
+        return Response({"plan": plan_status(client),
+                         "history": SubscriptionSerializer(client.subscriptions.all(), many=True).data})
+
+
+class PlanViewSet(viewsets.ModelViewSet):
+    """Super admin: plan names, length and price."""
+    permission_classes = [IsSuperAdmin]
+    serializer_class = PlanSerializer
+    queryset = Plan.objects.all()
+
+
+@api_view(["GET"])
+def my_subscription(request):
+    """The motel's own plan (client admin's My Plan screen, warning popup, expired screen)."""
+    client = request.user.client
+    if client is None:
+        return Response({"plan": {"status": "none"}, "history": []})
+    history = client.subscriptions.all() if request.user.role == User.CLIENT_ADMIN else client.subscriptions.none()
+    return Response({"plan": plan_status(client), "history": SubscriptionSerializer(history, many=True).data})
 
 
 class UserViewSet(viewsets.ModelViewSet):

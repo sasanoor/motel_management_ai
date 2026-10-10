@@ -5,7 +5,7 @@ Rules
 -----
 * Nights used = days from check-in to the departure date, minimum 1 (leaving on the check-in day = 1 night).
 * Room charge for the nights used, by method:
-    DAILY_RATE  nights used x daily rate (the stay's own rate for daily stays, the room type's daily
+    DAILY_RATE  nights used x daily rate (weekend rate on Friday / Saturday nights) (the stay's own rate for daily stays, the room type's daily
                 rate for weekly / monthly stays). Never more than the original room charge.
     PRORATA     original room charge x nights used / nights booked.
     NO_REFUND   original room charge (guest pays for the full booking).
@@ -46,6 +46,16 @@ def net_paid(stay):
     return sum((p.amount for p in stay.payments.all()), ZERO)
 
 
+def _used_charge(stay, daily, used):
+    """Nights used at the daily rate; Friday / Saturday nights at the weekend rate when the stay has one."""
+    wk_rate = Decimal(getattr(stay, "weekend_rate", 0) or 0)
+    if stay.rate_type == "DAILY" and wk_rate > 0:
+        from .models import count_weekend_nights
+        wk = count_weekend_nights(stay.check_in_date, used)
+        return daily * (used - wk) + wk_rate * wk
+    return daily * used
+
+
 def quote(stay, depart, method=DAILY_RATE, custom_room_charge=None):
     import datetime
     orig = original_values(stay)
@@ -62,7 +72,7 @@ def quote(stay, depart, method=DAILY_RATE, custom_room_charge=None):
         daily = Decimal(stay.room.room_type.default_rate)
 
     options = {
-        DAILY_RATE: min(q(daily * used), orig_room),
+        DAILY_RATE: min(q(_used_charge(stay, daily, used)), orig_room),
         PRORATA: q(orig_room * used / booked),
         NO_REFUND: orig_room,
     }

@@ -48,13 +48,14 @@ export function PageHead({ title, sub, children }) {
   )
 }
 
-export function Stat({ label, value, tone, onClick }) {
+export function Stat({ label, value, tone, onClick, sub }) {
   const cls = `stat ${tone ? 'stat-' + tone : ''} ${onClick ? 'stat-click' : ''}`
   if (onClick) {
     return (
       <button type="button" className={cls} onClick={onClick}>
         <div className="stat-value">{value}</div>
         <div className="stat-label">{label} <span className="stat-go">›</span></div>
+        {sub && <div className="stat-sub">{sub}</div>}
       </button>
     )
   }
@@ -62,6 +63,7 @@ export function Stat({ label, value, tone, onClick }) {
     <div className={cls}>
       <div className="stat-value">{value}</div>
       <div className="stat-label">{label}</div>
+      {sub && <div className="stat-sub">{sub}</div>}
     </div>
   )
 }
@@ -86,7 +88,7 @@ export function Empty({ children }) {
 /** Balance payment: same "Extra charges" + "Payment collected" layout as the check-in page. */
 export function PaymentModal({ stay, onClose, onSaved }) {
   const owed = Math.max(num(stay.balance), 0)
-  const p = usePayment(owed, { initialCash: owed ? owed.toFixed(2) : '' })
+  const p = usePayment(owed)   // nothing pre-filled: the clerk types cash, card or check
   const [notes, setNotes] = useState('')
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
@@ -113,7 +115,7 @@ export function PaymentModal({ stay, onClose, onSaved }) {
       </div>
       <Alert>{err}</Alert>
       <form onSubmit={save}>
-        <PaymentCollected p={p} totalNote={<><span>Owed now</span><strong>{money(owed)}</strong></>} />
+        <PaymentCollected p={p} totalNote={<><span>Owed now</span><strong>{money(p.owedNow)}</strong>{p.cardFee > 0 && <span className="tiny muted">{money(owed)} + card fee {money(p.cardFee)}</span>}</>} />
         <div className="form-grid cols-4">
           <label className="span-4">Notes
             <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional" />
@@ -166,9 +168,9 @@ export function RefundModal({ stay, onClose, onSaved }) {
         </label>
         <label>Refund by
           <div className="seg">
-            {['CASH', 'CREDIT'].map((m) => (
+            {['CASH', 'CREDIT', 'CHECK'].map((m) => (
               <button type="button" key={m} className={method === m ? 'on' : ''} onClick={() => setMethod(m)}>
-                {m === 'CASH' ? 'Cash' : 'Card'}
+                {{ CASH: 'Cash', CREDIT: 'Card', CHECK: 'Check' }[m]}
               </button>
             ))}
           </div>

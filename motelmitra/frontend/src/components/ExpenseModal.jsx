@@ -49,11 +49,11 @@ export default function ExpenseModal({ expense, date, onClose, onSaved }) {
         </label>
         <label>Paid by
           <div className="seg">
-            {[['CASH', 'Cash'], ['CREDIT', 'Card']].map(([k, label]) => (
+            {[['CASH', 'Cash'], ['CREDIT', 'Card'], ['CHECK', 'Check']].map(([k, label]) => (
               <button type="button" key={k} className={f.method === k ? 'on' : ''} onClick={() => setF((p) => ({ ...p, method: k }))}>{label}</button>
             ))}
           </div>
-          <span className="hint">{f.method === 'CASH' ? 'Taken out of the cash drawer' : 'Paid with the motel card'}</span>
+          <span className="hint">{f.method === 'CASH' ? 'Taken out of the cash drawer' : f.method === 'CHECK' ? 'Paid with a motel check' : 'Paid with the motel card'}</span>
         </label>
         <label>Clerk
           <input value={expense?.clerk_name || user.full_name} disabled />

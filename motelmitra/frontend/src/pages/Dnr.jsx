@@ -4,6 +4,7 @@ import { PhotoUploader } from '../components/Photos'
 import { Alert, Empty, Modal, PageHead } from '../components/ui'
 import { fmtDate, nameParts } from '../utils'
 import { confirmBox } from '../confirm'
+import GridFilter from '../components/GridFilter'
 
 const BLANK = {
   first_name: '', middle_name: '', last_name: '', phone: '', license_plate: '', dl_number: '', car: '', address: '', city: '', state: '', zip_code: '',
@@ -48,7 +49,7 @@ export default function Dnr() {
       <div className="card no-pad">
         {rows && !rows.length && <Empty>{q ? 'No DNR guests match.' : 'The DNR list is empty.'}</Empty>}
         {rows?.length > 0 && (
-          <div className="table-wrap">
+          <div className="table-wrap"><GridFilter />
             <table className="table">
               <thead>
                 <tr><th>Name</th><th>Phone</th><th>Plate</th><th>DL number</th><th>Car</th><th>Location</th><th>Reason</th><th>Added</th><th className="num">Stays</th><th></th></tr>

@@ -2,12 +2,15 @@ from django.contrib import admin
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
-from accounts.views import ClientViewSet, LoginView, SingleSessionRefreshView, UserViewSet, me, motel_settings, version
+from accounts.views import (ClientViewSet, LoginView, PlanViewSet, SingleSessionRefreshView, UserViewSet, me,
+                            motel_settings, my_subscription, version)
 from motel import views as mv
 
 router = DefaultRouter()
 router.register("clients", ClientViewSet, basename="client")
 router.register("users", UserViewSet, basename="user")
+router.register("plans", PlanViewSet, basename="plan")
+router.register("inventory/items", mv.InventoryItemViewSet, basename="inventory-item")
 router.register("room-types", mv.RoomTypeViewSet, basename="room-type")
 router.register("rooms", mv.RoomViewSet, basename="room")
 router.register("guests", mv.GuestViewSet, basename="guest")
@@ -23,9 +26,11 @@ urlpatterns = [
     path("api/auth/login/", LoginView.as_view()),
     path("api/auth/refresh/", SingleSessionRefreshView.as_view()),
     path("api/auth/me/", me),
+    path("api/subscription/", my_subscription),
     path("api/version/", version),
     path("api/settings/", motel_settings),
     path("api/dashboard/", mv.dashboard),
+    path("api/inventory/moves/", mv.inventory_moves),
     path("api/business-day/", mv.business_day),
     path("api/photo-sessions/", mv.photo_session_create),
     path("api/photo-sessions/<str:token>/", mv.photo_session_status),

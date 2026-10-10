@@ -70,7 +70,7 @@ function ProblemCard({ p, isAdmin, onStatus, onBox, onDelete }) {
         <span className={`pill ${PR_PILL[p.priority]}`}>{p.priority_label}</span>
         <span className={`pill ${ST_PILL[p.status]}`}>{p.status_label}</span>
         <HkPill status={p.room_status} />
-        <span className="tiny muted" style={{ marginLeft: 'auto' }}>#{p.id} · {p.reported_by_name} · {fmtDateTime(p.created_at)}</span>
+        <span className="tiny muted" style={{ marginLeft: 'auto' }}>{p.reported_by_name} · {fmtDateTime(p.created_at)}</span>
       </div>
       <div className="pb-desc">{p.description}</div>
       {p.photos.length > 0 && (

@@ -7,6 +7,14 @@ from django.db.models import Sum
 
 from accounts.models import Client
 
+WEEKEND_NIGHTS = (4, 5)   # Friday and Saturday nights (Monday = 0)
+
+
+def count_weekend_nights(start, nights):
+    """How many of `nights` nights from `start` are Friday or Saturday nights."""
+    return sum(1 for i in range(max(int(nights or 0), 0))
+               if (start + datetime.timedelta(days=i)).weekday() in WEEKEND_NIGHTS)
+
 
 class RoomType(models.Model):
     """King, Queen, Double, Suite, Jacuzzi, Handicap ... with a default nightly rate."""
@@ -16,6 +24,8 @@ class RoomType(models.Model):
     default_rate = models.DecimalField(max_digits=10, decimal_places=2, default=0)  # daily
     weekly_rate = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     monthly_rate = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    # Friday and Saturday nights (daily stays). 0 = same as the daily rate.
+    weekend_rate = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     description = models.CharField(max_length=255, blank=True)
     is_active = models.BooleanField(default=True)
 
@@ -163,6 +173,8 @@ class Stay(models.Model):
     rate_type = models.CharField(max_length=10, choices=RATE_TYPE_CHOICES, default=DAILY)
     # rate is per night / per week / per month depending on rate_type
     rate = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    # daily stays: rate for Friday and Saturday nights (0 = every night at `rate`)
+    weekend_rate = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     # number of nights / weeks / months charged
     periods = models.PositiveSmallIntegerField(default=1)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
@@ -238,7 +250,17 @@ class Stay(models.Model):
     def room_charge(self):
         if self.room_charge_override is not None:
             return Decimal(self.room_charge_override).quantize(Decimal("0.01"))
-        return (Decimal(self.rate) * self.periods + Decimal(self.extra_stay_charge or 0)).quantize(Decimal("0.01"))
+        if self.rate_type == self.DAILY and Decimal(self.weekend_rate or 0) > 0:
+            wk = self.weekend_nights
+            base = Decimal(self.rate) * (self.periods - wk) + Decimal(self.weekend_rate) * wk
+        else:
+            base = Decimal(self.rate) * self.periods
+        return (base + Decimal(self.extra_stay_charge or 0)).quantize(Decimal("0.01"))
+
+    @property
+    def weekend_nights(self):
+        """Friday and Saturday nights among the stay's own nights (not nights added at another rate)."""
+        return count_weekend_nights(self.check_in_date, self.periods) if self.rate_type == self.DAILY else 0
 
     @property
     def charges_total(self):
@@ -272,7 +294,8 @@ class Stay(models.Model):
 class Payment(models.Model):
     CASH = "CASH"
     CREDIT = "CREDIT"
-    METHOD_CHOICES = [(CASH, "Cash"), (CREDIT, "Credit")]
+    CHECK = "CHECK"
+    METHOD_CHOICES = [(CASH, "Cash"), (CREDIT, "Credit"), (CHECK, "Check")]
 
     stay = models.ForeignKey(Stay, on_delete=models.CASCADE, related_name="payments")
     amount = models.DecimalField(max_digits=10, decimal_places=2)
@@ -284,7 +307,9 @@ class Payment(models.Model):
     is_initial = models.BooleanField(default=False, help_text="Collected at check-in")
     PAYMENT = "PAYMENT"
     REFUND = "REFUND"
-    kind = models.CharField(max_length=10, choices=[(PAYMENT, "Payment"), (REFUND, "Refund")], default=PAYMENT)
+    STAYOVER = "STAYOVER"   # taken with "+ Stay" (guest stays longer and pays ahead)
+    kind = models.CharField(max_length=10, choices=[(PAYMENT, "Payment"), (REFUND, "Refund"), (STAYOVER, "Stay-over payment")],
+                            default=PAYMENT)
     notes = models.CharField(max_length=255, blank=True)
     # The business day the money was received on (reports and the room sheet count it on this day)
     business_date = models.DateField(null=True, blank=True, db_index=True)
@@ -345,10 +370,11 @@ class Expense(models.Model):
 
     CASH = "CASH"
     CREDIT = "CREDIT"
+    CHECK = "CHECK"
     client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="expenses")
     business_date = models.DateField(db_index=True)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
-    method = models.CharField(max_length=10, choices=[(CASH, "Cash"), (CREDIT, "Card")], default=CASH)
+    method = models.CharField(max_length=10, choices=[(CASH, "Cash"), (CREDIT, "Card"), (CHECK, "Check")], default=CASH)
     description = models.CharField(max_length=255)
     clerk = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="expenses")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -399,6 +425,8 @@ class Photo(models.Model):
     stay = models.ForeignKey("Stay", null=True, blank=True, on_delete=models.SET_NULL, related_name="photos")
     session = models.ForeignKey(PhotoSession, null=True, blank=True, on_delete=models.SET_NULL, related_name="photos")
     issue = models.ForeignKey("RoomIssue", null=True, blank=True, on_delete=models.SET_NULL, related_name="photos")
+    # DL photo of an extra guest on the stay (not the main guest)
+    extra_guest = models.ForeignKey("ExtraGuest", null=True, blank=True, on_delete=models.SET_NULL, related_name="photos")
     kind = models.CharField(max_length=12, choices=KINDS)
     file = models.FileField(max_length=255)
     via = models.CharField(max_length=10, blank=True)  # PHONE / WEBCAM / FILE
@@ -493,7 +521,7 @@ def delete_photo_file(photo):
         default_storage.delete(photo.file.name)
 
 
-def attach_photos(stay, photo_ids, reuse_dl=False):
+def attach_photos(stay, photo_ids, reuse_dl=False, extra_guest=None):
     """
     Link photos taken on the check-in form (they wait in media/pending/) to the saved stay,
     and, for a returning guest with no new DL photo, copy their last DL photo into this stay.
@@ -502,16 +530,19 @@ def attach_photos(stay, photo_ids, reuse_dl=False):
     if ids:
         for ph in Photo.objects.filter(client=stay.client, id__in=ids, stay__isnull=True):
             ph.stay = stay
-            if ph.kind in (Photo.DL_FRONT, Photo.DL_BACK):
+            if extra_guest is not None:
+                ph.extra_guest = extra_guest      # extra guest's licence: never the main guest's
+            elif ph.kind in (Photo.DL_FRONT, Photo.DL_BACK):
                 ph.guest = stay.guest
-            ph.save(update_fields=["stay", "guest"])
+            ph.save(update_fields=["stay", "guest", "extra_guest"])
             place_photo(ph)
     if reuse_dl:
-        have = set(stay.photos.filter(kind__in=[Photo.DL_FRONT, Photo.DL_BACK]).values_list("kind", flat=True))
+        have = set(stay.photos.filter(kind__in=[Photo.DL_FRONT, Photo.DL_BACK], extra_guest__isnull=True)
+                   .values_list("kind", flat=True))
         for kind in (Photo.DL_FRONT, Photo.DL_BACK):
             if kind in have:
                 continue
-            last = (Photo.objects.filter(client=stay.client, guest=stay.guest, kind=kind)
+            last = (Photo.objects.filter(client=stay.client, guest=stay.guest, kind=kind, extra_guest__isnull=True)
                     .exclude(stay=stay).order_by("-created_at").first())
             if last:
                 copy_photo(last, stay=stay)
@@ -584,6 +615,83 @@ class RoomIssue(models.Model):
     history = models.JSONField(default=list, blank=True)   # [{at, by, status, note}]
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
+class ExtraGuest(models.Model):
+    """Another adult on the same check-in: name, licence number and licence photos (Photo.extra_guest)."""
+
+    stay = models.ForeignKey(Stay, on_delete=models.CASCADE, related_name="extra_guests")
+    name = models.CharField(max_length=150)
+    dl_number = models.CharField(max_length=50, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+
+    def __str__(self):
+        return self.name
+
+
+class PaymentChange(models.Model):
+    """Every edit or delete of a payment: what it was, what it became, who and when."""
+
+    EDIT = "EDIT"
+    DELETE = "DELETE"
+    stay = models.ForeignKey(Stay, on_delete=models.CASCADE, related_name="payment_changes")
+    payment_id_was = models.IntegerField()
+    action = models.CharField(max_length=10, choices=[(EDIT, "Edited"), (DELETE, "Deleted")])
+    before = models.JSONField(default=dict)
+    after = models.JSONField(default=dict, blank=True)
+    reason = models.CharField(max_length=255, blank=True)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
+class InventoryItem(models.Model):
+    """A supply the motel keeps in stock (towels, soap, toilet paper ...)."""
+
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="inventory_items")
+    name = models.CharField(max_length=100)
+    category = models.CharField(max_length=50, blank=True)
+    unit = models.CharField(max_length=20, default="pcs")
+    quantity = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    min_quantity = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["category", "name"]
+        unique_together = ("client", "name")
+
+    @property
+    def is_low(self):
+        return self.min_quantity > 0 and self.quantity <= self.min_quantity
+
+
+class StockMove(models.Model):
+    """Stock in (bought), out (used / taken) or a count correction, with who and when."""
+
+    IN = "IN"
+    OUT = "OUT"
+    ADJUST = "ADJUST"
+    KINDS = [(IN, "Stock in"), (OUT, "Taken out"), (ADJUST, "Count corrected")]
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="stock_moves")
+    item = models.ForeignKey(InventoryItem, on_delete=models.CASCADE, related_name="moves")
+    kind = models.CharField(max_length=8, choices=KINDS)
+    change = models.DecimalField(max_digits=10, decimal_places=2)      # + in, - out
+    balance_after = models.DecimalField(max_digits=10, decimal_places=2)
+    room = models.ForeignKey(Room, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    cost = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    note = models.CharField(max_length=255, blank=True)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+")
+    business_date = models.DateField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ["-created_at"]

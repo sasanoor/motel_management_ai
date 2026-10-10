@@ -2,6 +2,7 @@ import { Fragment } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { dayOfStay, daysLeft, fmtDate, fmtTime, money, num, rateTypeInfo } from '../utils'
 import { BalanceCell, Empty, HkPill, IssueBadge } from './ui'
+import GridFilter from './GridFilter'
 
 /**
  * Every room for one date. A room rented more than once gets one row per entry;
@@ -42,31 +43,39 @@ export default function RoomSheet({ date, rooms, stays: allStays, dayMoney, onPa
 
   // Money is counted on the business day it was taken. Earlier payments show as "Paid".
   const money4 = (s) => {
-    let cash = 0, credit = 0, earlier = 0, lastDay = null
+    let cash = 0, credit = 0, check = 0, earlier = 0, lastDay = null
     for (const p of s.payments || []) {
       const day = p.business_date || p.paid_at?.slice(0, 10)
-      if (day === date) { if (p.method === 'CASH') cash += num(p.amount); else credit += num(p.amount) }
-      else if (day < date) { earlier += num(p.amount); lastDay = day }
+      if (day === date) {
+        if (p.method === 'CASH') cash += num(p.amount)
+        else if (p.method === 'CHECK') check += num(p.amount)
+        else credit += num(p.amount)
+      } else if (day < date) { earlier += num(p.amount); lastDay = day }
     }
-    return { cash, credit, earlier, lastDay }
+    return { cash, credit, check, earlier, lastDay }
   }
-  const tot = { total: 0, cash: 0, credit: 0, balance: 0, arrivals: 0 }
+  const tot = { total: 0, cash: 0, credit: 0, check: 0, balance: 0, arrivals: 0 }
   stays.forEach((s) => {
     const m = money4(s)
     if (s.check_in_date === date) { tot.total += num(s.total_amount); tot.arrivals += 1 }
     tot.cash += m.cash
     tot.credit += m.credit
+    tot.check += m.check
     tot.balance += Math.max(num(s.balance), 0)
   })
 
   // Money taken today on stays that have no row here (balance on an earlier stay, a guest already
   // gone, a refund). Shown so the footer always ends on the same figure as the Cash drawer.
   const other = dayMoney
-    ? { cash: r2(num(dayMoney.cash) - tot.cash), credit: r2(num(dayMoney.credit) - tot.credit) }
-    : { cash: 0, credit: 0 }
-  const hasOther = other.cash !== 0 || other.credit !== 0
-  const exp = { cash: num(dayMoney?.expenses_cash), card: num(dayMoney?.expenses_card) }
-  const hasExp = exp.cash !== 0 || exp.card !== 0
+    ? { cash: r2(num(dayMoney.cash) - tot.cash), credit: r2(num(dayMoney.credit) - tot.credit), check: r2(num(dayMoney.check) - tot.check) }
+    : { cash: 0, credit: 0, check: 0 }
+  const hasOther = other.cash !== 0 || other.credit !== 0 || other.check !== 0
+  // Check column only on days with check payments (keeps the sheet narrow otherwise)
+  const hasCheck = tot.check !== 0 || num(dayMoney?.check) !== 0 || num(dayMoney?.expenses_check) !== 0
+  const xc = hasCheck ? 1 : 0
+  const dayChk = num(dayMoney?.check)
+  const exp = { cash: num(dayMoney?.expenses_cash), card: num(dayMoney?.expenses_card), check: num(dayMoney?.expenses_check) }
+  const hasExp = exp.cash !== 0 || exp.card !== 0 || exp.check !== 0
   const showDay = hasOther || hasExp
 
   // Compact layout (9 columns): stay info merged, status under the guest name, actions pinned on the right.
@@ -88,7 +97,7 @@ export default function RoomSheet({ date, rooms, stays: allStays, dayMoney, onPa
   )
 
   return (
-    <div className="table-wrap sheet-wrap">
+    <div className="table-wrap sheet-wrap"><GridFilter />
       <table className="table sheet">
         <thead>
           <tr>
@@ -99,6 +108,7 @@ export default function RoomSheet({ date, rooms, stays: allStays, dayMoney, onPa
             <th className="num">Total</th>
             <th className="num">Cash</th>
             <th className="num">Credit</th>
+            {hasCheck && <th className="num">Check</th>}
             <th className="num">Balance</th>
             <th className="sheet-actions"></th>
           </tr>
@@ -111,7 +121,7 @@ export default function RoomSheet({ date, rooms, stays: allStays, dayMoney, onPa
               {list.length === 0 ? (
                 <tr>
                   <td><span className="room-chip">{room.number}</span><div className="tiny muted">{room.room_type}</div></td>
-                  <td colSpan={7} className="muted vacant-cell">Vacant · {money(room.default_rate)} <HkPill status={room.hk_status} note={room.hk_note} /> <IssueBadge count={room.open_issues} />
+                  <td colSpan={7 + xc} className="muted vacant-cell">Vacant · {money(room.default_rate)} <HkPill status={room.hk_status} note={room.hk_note} /> <IssueBadge count={room.open_issues} />
                     {room.hk_status === 'OUT_OF_ORDER' && room.hk_note && <span className="tiny muted"> {room.hk_note}</span>}</td>
                   {checkInCell(room)}
                 </tr>
@@ -145,8 +155,8 @@ export default function RoomSheet({ date, rooms, stays: allStays, dayMoney, onPa
                       <td className={`num ${stayOver ? 'sheet-earlier' : ''}`} title={stayOver ? `Checked in ${fmtDate(s.check_in_date)}; counted in that day's total` : ''}>
                         {money(s.total_amount)}<div className="tiny muted">{money(s.rate)}{rateTypeInfo(s.rate_type).short}</div>
                       </td>
-                      {m.cash === 0 && m.credit === 0 && m.earlier > 0 ? (
-                        <td colSpan={2} className="num">
+                      {m.cash === 0 && m.credit === 0 && m.check === 0 && m.earlier > 0 ? (
+                        <td colSpan={2 + xc} className="num">
                           {num(s.balance) > 0
                             ? <span className="pill pill-warn">Part paid</span>
                             : <span className="pill pill-green">Paid</span>}
@@ -159,6 +169,7 @@ export default function RoomSheet({ date, rooms, stays: allStays, dayMoney, onPa
                             {m.credit ? money(m.credit) : <span className="muted">—</span>}
                             {m.earlier > 0 && <div className="tiny muted">+{money(m.earlier)} earlier</div>}
                           </td>
+                          {hasCheck && <td className="num">{m.check ? money(m.check) : <span className="muted">—</span>}</td>}
                         </>
                       )}
                       <td className="num"><BalanceCell value={s.balance} /></td>
@@ -167,7 +178,7 @@ export default function RoomSheet({ date, rooms, stays: allStays, dayMoney, onPa
                     {i === list.length - 1 && (report ? room.available : freeTonight(list)) && (
                       <tr className="rent-again">
                         <td></td>
-                        <td colSpan={7} className="muted vacant-cell">Free for tonight <HkPill status={room.hk_status} note={room.hk_note} /></td>
+                        <td colSpan={7 + xc} className="muted vacant-cell">Free for tonight <HkPill status={room.hk_status} note={room.hk_note} /></td>
                         {checkInCell(room)}
                       </tr>
                     )}
@@ -182,13 +193,14 @@ export default function RoomSheet({ date, rooms, stays: allStays, dayMoney, onPa
           <tr className="sheet-total">
             <td colSpan={4}>
               {showDay ? 'Rows above' : `Totals for ${fmtDate(date)}`}
-              <div className="tiny muted">{report && `${stays.length} entr${stays.length === 1 ? 'y' : 'ies'} · ${rooms.filter((r) => r.available).length} rooms open tonight · `}Total = {tot.arrivals} check-in{tot.arrivals === 1 ? '' : 's'} on this date · Cash / Credit = taken on this date</div>
+              <div className="tiny muted">{report && `${stays.length} entr${stays.length === 1 ? 'y' : 'ies'} · ${rooms.filter((r) => r.available).length} rooms open tonight · `}Total = {tot.arrivals} check-in{tot.arrivals === 1 ? '' : 's'} on this date · Cash / Credit{hasCheck ? ' / Check' : ''} = taken on this date</div>
             </td>
             <td className="num">{money(tot.total)}</td>
             <td className="num">{money(tot.cash)}</td>
             <td className="num">{money(tot.credit)}</td>
+            {hasCheck && <td className="num">{money(tot.check)}</td>}
             <td className="num"><span className={tot.balance > 0 ? 'owed' : ''}>{money(tot.balance)}</span></td>
-            <td className="num sheet-actions"><strong>{money(tot.cash + tot.credit)}</strong><div className="tiny muted">collected</div></td>
+            <td className="num sheet-actions"><strong>{money(tot.cash + tot.credit + tot.check)}</strong><div className="tiny muted">collected</div></td>
           </tr>
           {hasOther && (
             <tr className="sheet-other">
@@ -198,8 +210,9 @@ export default function RoomSheet({ date, rooms, stays: allStays, dayMoney, onPa
               </td>
               <td className="num">{money(other.cash)}</td>
               <td className="num">{money(other.credit)}</td>
+              {hasCheck && <td className="num">{money(other.check)}</td>}
               <td></td>
-              <td className="num sheet-actions"><strong>{money(other.cash + other.credit)}</strong></td>
+              <td className="num sheet-actions"><strong>{money(other.cash + other.credit + other.check)}</strong></td>
             </tr>
           )}
           {showDay && <>
@@ -207,23 +220,26 @@ export default function RoomSheet({ date, rooms, stays: allStays, dayMoney, onPa
               <td colSpan={5}>Day total collected<div className="tiny muted">Matches Collections by clerk</div></td>
               <td className="num">{money(dayMoney.cash)}</td>
               <td className="num">{money(dayMoney.credit)}</td>
+              {hasCheck && <td className="num">{money(dayChk)}</td>}
               <td></td>
-              <td className="num sheet-actions"><strong>{money(num(dayMoney.cash) + num(dayMoney.credit))}</strong><div className="tiny muted">collected</div></td>
+              <td className="num sheet-actions"><strong>{money(num(dayMoney.cash) + num(dayMoney.credit) + dayChk)}</strong><div className="tiny muted">collected</div></td>
             </tr>
             {hasExp && <>
               <tr className="sheet-other sheet-exp">
                 <td colSpan={5}>Less expenses<div className="tiny muted">Paid out on this date (Today's Report → Cash drawer)</div></td>
                 <td className="num owed">{exp.cash ? `−${money(exp.cash)}` : <span className="muted">—</span>}</td>
                 <td className="num owed">{exp.card ? `−${money(exp.card)}` : <span className="muted">—</span>}</td>
+                {hasCheck && <td className="num owed">{exp.check ? `−${money(exp.check)}` : <span className="muted">—</span>}</td>}
                 <td></td>
-                <td className="num sheet-actions owed"><strong>−{money(exp.cash + exp.card)}</strong></td>
+                <td className="num sheet-actions owed"><strong>−{money(exp.cash + exp.card + exp.check)}</strong></td>
               </tr>
               <tr className="sheet-total sheet-day">
                 <td colSpan={5}>Net after expenses<div className="tiny muted">Cash column = Cash in drawer</div></td>
                 <td className="num">{money(r2(num(dayMoney.cash) - exp.cash))}</td>
                 <td className="num">{money(r2(num(dayMoney.credit) - exp.card))}</td>
+                {hasCheck && <td className="num">{money(r2(dayChk - exp.check))}</td>}
                 <td></td>
-                <td className="num sheet-actions"><strong>{money(r2(num(dayMoney.cash) + num(dayMoney.credit) - exp.cash - exp.card))}</strong><div className="tiny muted">net</div></td>
+                <td className="num sheet-actions"><strong>{money(r2(num(dayMoney.cash) + num(dayMoney.credit) + dayChk - exp.cash - exp.card - exp.check))}</strong><div className="tiny muted">net</div></td>
               </tr>
             </>}
           </>}

@@ -153,3 +153,23 @@ export const HK = {
   CLEANING: { label: 'Cleaning', cls: 'pill-blue' },
   OUT_OF_ORDER: { label: 'Out of order', cls: 'pill-dark' },
 }
+
+// Payment methods: Cash, Credit (card), Check
+export const METHOD = {
+  CASH: { label: 'Cash', card: 'Cash', pill: 'pay-cash', amt: 'amt-cash' },
+  CREDIT: { label: 'Credit', card: 'Card', pill: 'pay-credit', amt: 'amt-credit' },
+  CHECK: { label: 'Check', card: 'Check', pill: 'pay-check', amt: 'amt-check' },
+}
+export const methodInfo = (m) => METHOD[m] || METHOD.CREDIT
+
+// Friday and Saturday nights get the weekend rate (daily stays)
+export function weekendNights(startIso, nights) {
+  if (!startIso) return 0
+  const [y, m, d] = startIso.slice(0, 10).split('-').map(Number)
+  let n = 0
+  for (let i = 0; i < Math.max(Number(nights) || 0, 0); i++) {
+    const day = new Date(y, m - 1, d + i).getDay()   // 5 = Friday, 6 = Saturday
+    if (day === 5 || day === 6) n += 1
+  }
+  return n
+}
